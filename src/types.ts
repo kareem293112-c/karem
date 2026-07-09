@@ -11,6 +11,43 @@ export interface AppUser {
   coins: number;
   xp: number;
   isAgent?: boolean;
+  bio?: string;
+  followers?: string[];
+  following?: string[];
+  clanId?: string;
+  senderXp?: number;
+  charmXp?: number;
+  badges?: string[];
+  vipLevel?: number;
+}
+
+export interface Clan {
+  clanId: string;
+  clanName: string;
+  clanLogo: string;
+  ownerId: string;
+  totalXp: number;
+}
+
+export interface Badge {
+  badgeId: string;
+  badgeName: string;
+  badgeIcon: string;
+  unlockCriteria: string;
+}
+
+export interface PrivateMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar: string;
+  receiverId: string;
+  receiverName: string;
+  text: string;
+  timestamp: string;
+  isEncrypted?: boolean;
+  rawCiphertext?: string;
+  iv?: string;
 }
 
 export interface VoiceSeat {

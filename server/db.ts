@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { AppUser, VoiceRoom, AgentTransferLog } from '../src/types';
+import { AppUser, VoiceRoom, AgentTransferLog, PrivateMessage } from '../src/types';
 
 const DB_FILE = path.join(process.cwd(), 'db.json');
 
@@ -9,6 +9,10 @@ export interface DatabaseSchema {
   rooms: VoiceRoom[];
   transactions: AgentTransferLog[];
   agentBalance: number;
+  privateMessages: PrivateMessage[];
+  giftLogs?: any[];
+  clans?: any[];
+  badges?: any[];
 }
 
 const DEFAULT_USERS: AppUser[] = [
@@ -19,7 +23,10 @@ const DEFAULT_USERS: AppUser[] = [
     level: 15,
     coins: 450,
     xp: 2400,
-    isAgent: true
+    isAgent: true,
+    bio: 'المدير العام ومؤسس صدى العرب ☕ أهلاً بالجميع في ديوانيتنا.',
+    followers: [],
+    following: []
   },
   {
     id: '1002',
@@ -28,6 +35,9 @@ const DEFAULT_USERS: AppUser[] = [
     level: 28,
     coins: 1200,
     xp: 5600,
+    bio: 'شاعرة ومحبة للتراث العربي الأصيل 📜✨ صدى صوتكم هنا.',
+    followers: [],
+    following: []
   },
   {
     id: '1003',
@@ -36,6 +46,9 @@ const DEFAULT_USERS: AppUser[] = [
     level: 8,
     coins: 75,
     xp: 850,
+    bio: 'محب للتعارف والدردشة الطيبة والقهوة السعودية ☕🇸🇦',
+    followers: [],
+    following: []
   },
   {
     id: '1004',
@@ -44,6 +57,9 @@ const DEFAULT_USERS: AppUser[] = [
     level: 34,
     coins: 3500,
     xp: 9800,
+    bio: 'وكيل الدعم المعتمد 💎 تواصل معي للاستفسارات الرسمية.',
+    followers: [],
+    following: []
   },
   {
     id: '1005',
@@ -52,6 +68,9 @@ const DEFAULT_USERS: AppUser[] = [
     level: 4,
     coins: 10,
     xp: 150,
+    bio: 'عضوة جديدة ومتحمسة لتكوين صداقات حقيقية في صدى العرب ⭐',
+    followers: [],
+    following: []
   },
 ];
 
@@ -150,13 +169,45 @@ export function initDb(): DatabaseSchema {
       rooms: DEFAULT_ROOMS,
       transactions: DEFAULT_TRANSACTIONS,
       agentBalance: 250000,
+      privateMessages: []
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
     return defaultDb;
   }
   try {
     const data = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data) as DatabaseSchema;
+    
+    // Backfill missing fields
+    if (!parsed.privateMessages) {
+      parsed.privateMessages = [];
+    }
+    if (!parsed.users) {
+      parsed.users = [];
+    }
+    if (!parsed.clans) {
+      parsed.clans = [];
+    }
+    if (!parsed.badges) {
+      parsed.badges = [
+        { badgeId: 'diamond_supporter', badgeName: 'الشاحن الماسي', badgeIcon: '💎', unlockCriteria: 'إرسال هدايا بقيمة 50,000 كوينز' },
+        { badgeId: 'elite_host', badgeName: 'المضيف النجم', badgeIcon: '⭐', unlockCriteria: 'تلقي هدايا بقيمة 10,000 كوينز' },
+        { badgeId: 'loyal_member', badgeName: 'عضو القبيلة', badgeIcon: '🛡️', unlockCriteria: 'الانضمام إلى عائلة نشطة' }
+      ];
+    }
+    parsed.users = parsed.users.map(u => ({
+      ...u,
+      bio: u.bio !== undefined ? u.bio : 'عضو مميز في صدى العرب ☕',
+      followers: Array.isArray(u.followers) ? u.followers : [],
+      following: Array.isArray(u.following) ? u.following : [],
+      clanId: u.clanId || undefined,
+      senderXp: u.senderXp !== undefined ? u.senderXp : 0,
+      charmXp: u.charmXp !== undefined ? u.charmXp : 0,
+      badges: Array.isArray(u.badges) ? u.badges : [],
+      vipLevel: u.vipLevel !== undefined ? u.vipLevel : 1
+    }));
+
+    return parsed;
   } catch (error) {
     console.error('Error reading db.json, recreating...', error);
     const defaultDb: DatabaseSchema = {
@@ -164,6 +215,7 @@ export function initDb(): DatabaseSchema {
       rooms: DEFAULT_ROOMS,
       transactions: DEFAULT_TRANSACTIONS,
       agentBalance: 250000,
+      privateMessages: []
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
     return defaultDb;
@@ -171,7 +223,9 @@ export function initDb(): DatabaseSchema {
 }
 
 export function getDb(): DatabaseSchema {
-  return initDb();
+  // Always trigger initDb which reads and backfills
+  const db = initDb();
+  return db;
 }
 
 export function saveDb(data: DatabaseSchema) {

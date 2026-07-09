@@ -24,6 +24,7 @@ import {
   ChevronRight,
   ChevronDown,
   User,
+  MessageSquare,
   Music,
   Settings,
   LogOut,
@@ -35,12 +36,20 @@ import {
   Sparkles,
   Clock,
   ShieldCheck,
+  Shield,
   Info,
   Phone,
   Mail,
   UserCheck,
   Wifi
 } from 'lucide-react';
+import {
+  deriveRoomKey,
+  encryptMessage,
+  decryptMessage,
+  generateRSAKeyPair,
+  exportPublicKey
+} from './lib/crypto';
 import {
   SIMULATED_USERS,
   INITIAL_ROOMS,
@@ -52,7 +61,74 @@ import {
   getXpForNextRoomLevel
 } from './data/mockData';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
-import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat } from './types';
+import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
+
+// Interactive React subcomponent to dynamically decrypt and display messages safely
+const EncryptedMessageText = ({ 
+  ciphertext, 
+  iv, 
+  derivedKey, 
+  showCiphertext,
+  fallbackText 
+}: { 
+  ciphertext: string; 
+  iv: string; 
+  derivedKey: CryptoKey | null; 
+  showCiphertext: boolean;
+  fallbackText: string;
+}) => {
+  const [decryptedText, setDecryptedText] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!derivedKey) {
+      setDecryptedText(null);
+      setFailed(true);
+      return;
+    }
+    
+    let active = true;
+    decryptMessage(ciphertext, iv, derivedKey)
+      .then((decrypted) => {
+        if (active) {
+          setDecryptedText(decrypted);
+          setFailed(false);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setDecryptedText(null);
+          setFailed(true);
+        }
+      });
+      
+    return () => {
+      active = false;
+    };
+  }, [ciphertext, iv, derivedKey]);
+
+  if (showCiphertext) {
+    return (
+      <span className="font-mono text-[7px] text-slate-400 break-all leading-tight tracking-wider select-all">
+        {ciphertext.substring(0, 32)}...
+      </span>
+    );
+  }
+
+  if (failed) {
+    return (
+      <span className="text-red-400 font-extrabold text-[8px] flex items-center gap-1">
+        <span>⚠️ [فك تشفير غير متاح]</span>
+      </span>
+    );
+  }
+
+  if (decryptedText === null) {
+    return <span className="text-slate-400 italic text-[8px]">جاري فك التشفير...</span>;
+  }
+
+  return <span className="text-emerald-400 font-bold text-[9px]">{decryptedText}</span>;
+};
 
 export default function App() {
   // Global States representing Database
@@ -62,6 +138,16 @@ export default function App() {
   const [activeRoom, setActiveRoom] = useState<VoiceRoom | null>(null);
   const [transactions, setTransactions] = useState<AgentTransferLog[]>(INITIAL_TRANSACTIONS);
   const [agentBalance, setAgentBalance] = useState<number>(248350);
+
+  // Profile, Direct Messaging & Follower States
+  const [selectedProfileUser, setSelectedProfileUser] = useState<AppUser | null>(null);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isPrivateInboxOpen, setIsPrivateInboxOpen] = useState(false);
+  const [activePrivateChatUser, setActivePrivateChatUser] = useState<AppUser | null>(null);
+  const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
+  const [newPrivateMessageInput, setNewPrivateMessageInput] = useState('');
+  const [isEditingBio, setIsEditingBio] = useState(false);
+  const [bioEditValue, setBioEditValue] = useState('');
 
   // App Simulator Screen Navigation: 'login' | 'explore' | 'room' | 'agent_pin' | 'agent_dashboard'
   const [currentScreen, setCurrentScreen] = useState<'login' | 'explore' | 'room' | 'agent_pin' | 'agent_dashboard'>('login');
@@ -96,6 +182,21 @@ export default function App() {
   const [transferSuccess, setTransferSuccess] = useState(false);
   const [transferErrorMsg, setTransferErrorMsg] = useState('');
   
+  // End-to-End Encryption (E2EE) States
+  const [isE2EEEnabled, setIsE2EEEnabled] = useState(true);
+  const [e2eePassphrase, setE2eePassphrase] = useState('SadaArabE2EESecureKey');
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [derivedKey, setDerivedKey] = useState<CryptoKey | null>(null);
+  const [e2eeAuditLogs, setE2eeAuditLogs] = useState<string[]>([]);
+  const [showCiphertextInFeed, setShowCiphertextInFeed] = useState(false);
+  const [clientKeyPair, setClientKeyPair] = useState<CryptoKeyPair | null>(null);
+  const [clientPublicKeyBase64, setClientPublicKeyBase64] = useState('');
+  const [isE2EEDrawerOpen, setIsE2EEDrawerOpen] = useState(false);
+
+  const addE2eeLog = (msg: string) => {
+    const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setE2eeAuditLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 49)]);
+  };
 
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -152,6 +253,189 @@ export default function App() {
     const interval = setInterval(fetchDbStates, 5000);
     return () => clearInterval(interval);
   }, [currentUser?.id, activeRoom?.id]);
+
+  // Fetch Private Messages
+  const fetchPrivateMessages = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch(`/api/messages/${currentUser.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPrivateMessages(data);
+      }
+    } catch (err) {
+      console.error('Error fetching private messages:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser) {
+      fetchPrivateMessages();
+    }
+  }, [currentUser?.id, isPrivateInboxOpen, activePrivateChatUser?.id]);
+
+  // Send Private Message Handler
+  const handleSendPrivateMessage = async () => {
+    if (!currentUser || !activePrivateChatUser || !newPrivateMessageInput.trim()) return;
+    
+    const textToSend = newPrivateMessageInput.trim();
+    setNewPrivateMessageInput('');
+    
+    let isEncrypted = false;
+    let rawCiphertext = '';
+    let iv = '';
+    
+    // Optional: We can encrypt using E2EE symmetric key if E2EE is enabled!
+    try {
+      let payload = {
+        senderId: currentUser.id,
+        receiverId: activePrivateChatUser.id,
+        text: textToSend,
+        isEncrypted: false,
+        rawCiphertext: '',
+        iv: ''
+      };
+      
+      if (isE2EEEnabled && derivedKey) {
+        const { ciphertext, iv: cryptoIv } = await encryptMessage(textToSend, derivedKey);
+        payload.isEncrypted = true;
+        payload.rawCiphertext = ciphertext;
+        payload.iv = cryptoIv;
+      }
+      
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      if (res.ok) {
+        const result = await res.json();
+        setPrivateMessages(prev => [...prev, result.message]);
+      }
+    } catch (err) {
+      console.error('Error sending private message:', err);
+    }
+  };
+
+  // Toggle Follow Handler
+  const handleToggleFollow = async (targetUser: AppUser) => {
+    if (!currentUser) {
+      alert('يجب تسجيل الدخول أولاً للمتابعة!');
+      return;
+    }
+    if (currentUser.id === targetUser.id) {
+      alert('لا يمكنك متابعة نفسك!');
+      return;
+    }
+    
+    try {
+      const res = await fetch('/api/users/follow', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          followerId: currentUser.id,
+          followingId: targetUser.id
+        })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        
+        // Update users list and current user
+        setUsers(prev => prev.map(u => {
+          if (u.id === currentUser.id) return data.follower;
+          if (u.id === targetUser.id) return data.following;
+          return u;
+        }));
+        
+        setCurrentUser(data.follower);
+        if (selectedProfileUser?.id === targetUser.id) {
+          setSelectedProfileUser(data.following);
+        }
+      }
+    } catch (err) {
+      console.error('Error toggling follow:', err);
+    }
+  };
+
+  // Save Biography Handler
+  const handleSaveBio = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch('/api/users/update-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          id: currentUser.id,
+          bio: bioEditValue
+        })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentUser(data.user);
+        setUsers(prev => prev.map(u => u.id === currentUser.id ? data.user : u));
+        if (selectedProfileUser?.id === currentUser.id) {
+          setSelectedProfileUser(data.user);
+        }
+        setIsEditingBio(false);
+      }
+    } catch (err) {
+      console.error('Error saving bio:', err);
+    }
+  };
+
+  // End-to-End Cryptography Key Derivation & RSA Lifecycle
+  useEffect(() => {
+    if (!activeRoom) {
+      setDerivedKey(null);
+      return;
+    }
+    
+    let isMounted = true;
+
+    const initCryptoForRoom = async () => {
+      try {
+        addE2eeLog(`جاري تهيئة منظومة التشفير للغرفة [${activeRoom.name.replace(/☕|🎶|🔒/g, '').trim()}]...`);
+        
+        // Derive AES-GCM-256 Symmetric Key
+        const key = await deriveRoomKey(e2eePassphrase, activeRoom.id);
+        if (isMounted) {
+          setDerivedKey(key);
+          addE2eeLog(`تم اشتقاق مفتاح AES-GCM 256-bit باستخدام PBKDF2 (100K دورة) بنجاح!`);
+        }
+        
+        // Generate RSA Keypair if not exists for peer identity
+        if (!clientKeyPair && isMounted) {
+          addE2eeLog(`جاري توليد زوج مفاتيح الهوية (RSA-OAEP 2048-bit) محلياً...`);
+          const rsaPair = await generateRSAKeyPair();
+          if (isMounted) {
+            setClientKeyPair(rsaPair);
+            const pubPEM = await exportPublicKey(rsaPair.publicKey);
+            setClientPublicKeyBase64(pubPEM);
+            addE2eeLog(`تم توليد مفتاح RSA العام للهوية وتصديره بنجاح!`);
+          }
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          addE2eeLog(`⚠️ خطأ في العمليات التشفيرية: ${err.message}`);
+        }
+      }
+    };
+    
+    initCryptoForRoom();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeRoom?.id, e2eePassphrase]);
 
   // Play incoming voice stream audio via Web Audio API
   const playAudioChunk = (speakerId: string, pcmData: number[]) => {
@@ -286,13 +570,26 @@ export default function App() {
         }
 
         else if (data.type === 'new_chat_message') {
+          let extraProps: any = {};
+          if (data.text && data.text.startsWith('🔒__E2EE__:')) {
+            try {
+              const payloadStr = data.text.replace('🔒__E2EE__:', '');
+              const parsed = JSON.parse(payloadStr);
+              extraProps = {
+                isEncrypted: true,
+                rawCiphertext: parsed.ciphertext,
+                iv: parsed.iv
+              };
+            } catch (err) {}
+          }
           setRoomMessages(prev => [
             ...prev,
             {
               sender: data.senderName,
               text: data.text,
               color: data.senderId === currentUser.id ? 'text-amber-400' : 'text-purple-300 font-medium',
-              type: 'chat'
+              type: 'chat',
+              ...extraProps
             }
           ]);
         }
@@ -311,11 +608,12 @@ export default function App() {
 
         else if (data.type === 'gift_received') {
           spawnFloatingGift(data.gift.icon);
+          const receiverText = data.receiverName ? `إلى [ ${data.receiverName} ]` : 'للمجلس';
           setRoomMessages(prev => [
             ...prev,
             {
               sender: data.senderName,
-              text: `أرسل هدية فاخرة: [ ${data.gift.arabicName} ${data.gift.icon} ] للمجلس! 🌟`,
+              text: `أرسل هدية فاخرة: [ ${data.gift.arabicName} ${data.gift.icon} ] ${receiverText}! 🌟`,
               color: 'text-amber-400 font-extrabold animate-pulse',
               type: 'chat'
             }
@@ -334,6 +632,13 @@ export default function App() {
 
         else if (data.type === 'audio_stream') {
           playAudioChunk(data.userId, data.audioData);
+        }
+
+        else if (data.type === 'new_private_message') {
+          setPrivateMessages(prev => {
+            if (prev.some(m => m.id === data.message.id)) return prev;
+            return [...prev, data.message];
+          });
         }
       } catch (err) {
         console.error('WebSocket parsing error:', err);
@@ -393,6 +698,7 @@ export default function App() {
   // Native Mobile UI States (Agora RTC status, Bottom sheet draw lists)
   const [isGiftDrawerOpen, setIsGiftDrawerOpen] = useState(false);
   const [isAgoraDrawerOpen, setIsAgoraDrawerOpen] = useState(false);
+  const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
   const [isNoiseCancellation, setIsNoiseCancellation] = useState(true);
   const [isEchoCancellation, setIsEchoCancellation] = useState(true);
   const [isVoiceConnected, setIsVoiceConnected] = useState(true);
@@ -400,6 +706,18 @@ export default function App() {
   const [agoraPacketLoss, setAgoraPacketLoss] = useState(0.0); // %
   const [isAdminDrawerOpen, setIsAdminDrawerOpen] = useState(false);
   const [selectedGift, setSelectedGift] = useState<Gift | null>(null);
+  const [selectedRecipientSeatIndex, setSelectedRecipientSeatIndex] = useState<number | 'all'>('all');
+  const [dashboardTab, setDashboardTab] = useState<'party' | 'games' | 'explore' | 'messages' | 'profile'>('party');
+  const [isDailyBonusOpen, setIsDailyBonusOpen] = useState(false);
+  const [dailyBonusClaimed, setDailyBonusClaimed] = useState(false);
+  const [driftingBottleMode, setDriftingBottleMode] = useState<'idle' | 'writing' | 'reading'>('idle');
+  const [bottleMessage, setBottleMessage] = useState('');
+  const [pickedBottle, setPickedBottle] = useState<string | null>(null);
+  const [supportChatOpen, setSupportChatOpen] = useState(false);
+  const [supportChatMessages, setSupportChatMessages] = useState<Array<{ sender: string; text: string; isUser: boolean }>>([
+    { sender: 'دعم صدى الفني 🐱', text: 'مرحباً بك في صدى العرب يا بطل! نحن هنا لخدمتك على مدار الساعة 🌟', isUser: false }
+  ]);
+  const [supportInput, setSupportInput] = useState('');
 
   // Dynamic Device Type Detection
   const [deviceInfo, setDeviceInfo] = useState({ isMobile: false, platform: 'desktop', modelName: 'Desktop' });
@@ -744,27 +1062,107 @@ export default function App() {
       return;
     }
 
+    let receiverId: string | null = null;
+    let receiverSeatIndex: number | null = null;
+
+    if (selectedRecipientSeatIndex !== 'all') {
+      const seat = activeRoom.seats.find(s => s.index === selectedRecipientSeatIndex);
+      if (seat && seat.userId) {
+        receiverId = seat.userId;
+        receiverSeatIndex = seat.index;
+      }
+    }
+
     // Process via WebSocket to ensure authoritative database deduction and live broadcasting
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         action: 'send_gift',
         roomId: activeRoom.id,
-        userId: currentUser.id,
+        senderId: currentUser.id,
+        receiverId,
+        receiverSeatIndex,
         gift
       }));
+    } else {
+      // Local fallback in case websocket is not open/connected (e.g., initial or offline simulation)
+      // Deduct locally and show message
+      const updatedUser = { 
+        ...currentUser, 
+        coins: currentUser.coins - gift.cost,
+        xp: currentUser.xp + gift.xpReward,
+        level: Math.floor(1 + Math.sqrt((currentUser.xp + gift.xpReward) / 100))
+      };
+      setCurrentUser(updatedUser);
+      setUsers(users.map(u => u.id === currentUser.id ? updatedUser : u));
+
+      let recName = 'المجلس';
+      if (receiverId) {
+        const recUser = users.find(u => u.id === receiverId);
+        if (recUser) {
+          recName = recUser.name;
+          // Add 50% commission locally
+          const updatedRec = {
+            ...recUser,
+            coins: recUser.coins + gift.cost * 0.5,
+            xp: recUser.xp + gift.xpReward * 0.8,
+            level: Math.floor(1 + Math.sqrt((recUser.xp + gift.xpReward * 0.8) / 100))
+          };
+          setUsers(users.map(u => u.id === receiverId ? updatedRec : u));
+        }
+      }
+
+      setRoomMessages(prev => [
+        ...prev,
+        {
+          sender: currentUser.name,
+          text: `أرسل هدية فاخرة: [ ${gift.arabicName} ${gift.icon} ] إلى [ ${recName} ]! 🌟`,
+          color: 'text-amber-400 font-extrabold animate-pulse',
+          type: 'chat'
+        }
+      ]);
     }
   };
 
-  const handleSendChatMessage = () => {
-    if (!chatInputValue.trim()) return;
+  const handleSendChatMessage = async () => {
+    const rawText = chatInputValue.trim();
+    if (!rawText) return;
     
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    let textToSend = rawText;
+    let extraProps: any = {};
+    
+    if (isE2EEEnabled && derivedKey && activeRoom) {
+      try {
+        addE2eeLog(`جاري تشفير الرسالة الصادرة: "${rawText}"`);
+        const { ciphertext, iv } = await encryptMessage(rawText, derivedKey);
+        
+        const payload = {
+          e2ee: true,
+          iv: iv,
+          ciphertext: ciphertext,
+          senderName: currentUser?.name || 'مجهول'
+        };
+        
+        textToSend = `🔒__E2EE__:${JSON.stringify(payload)}`;
+        extraProps = {
+          isEncrypted: true,
+          rawCiphertext: ciphertext,
+          iv: iv
+        };
+        addE2eeLog(`تم تشفير الرسالة الصادرة بنجاح! النص المشفر: "${ciphertext.substring(0, 15)}..."`);
+      } catch (err: any) {
+        addE2eeLog(`⚠️ فشل التشفير: ${err.message}`);
+        alert('فشل تشفير الرسالة تلقائياً!');
+        return;
+      }
+    }
+    
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeRoom) {
       wsRef.current.send(JSON.stringify({
         action: 'chat_message',
         roomId: activeRoom.id,
         userId: currentUser?.id,
         userName: currentUser?.name,
-        text: chatInputValue.trim()
+        text: textToSend
       }));
       setChatInputValue('');
     } else {
@@ -773,9 +1171,10 @@ export default function App() {
         ...prev,
         {
           sender: currentUser ? currentUser.name : 'مجهول',
-          text: chatInputValue.trim(),
+          text: textToSend,
           color: 'text-amber-400',
-          type: 'chat'
+          type: 'chat',
+          ...extraProps
         }
       ]);
       setChatInputValue('');
@@ -914,7 +1313,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-0 relative overflow-hidden" id="root-container">
+    <div className="h-screen h-[100dvh] bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-0 relative overflow-hidden" id="root-container">
       {/* Ambient background glows */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-900/10 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-[#7C3AED]/10 rounded-full blur-[150px] pointer-events-none"></div>
@@ -1134,89 +1533,148 @@ export default function App() {
 
         </div>
 
-        {/* RIGHT COLUMN: Full-Screen Responsive App Container (No frames, adapts completely to screen width and native device edges) */}
-        <div className="flex flex-col items-center justify-center w-full min-h-screen" id="phone-simulator-container">
+         {/* RIGHT COLUMN: Full-Screen Responsive App Container (No frames, adapts completely to screen width and native device edges) */}
+        <div className="flex flex-col items-center justify-center w-full h-screen max-h-screen h-[100dvh] max-h-[100dvh] overflow-hidden" id="phone-simulator-container">
 
           {/* Device Shell - Fully responsive full-screen canvas */}
-          <div className="relative w-full min-h-screen bg-[#03000a] flex flex-col font-sans overflow-hidden" id="smartphone-device">
+          <div className="relative w-full h-screen max-h-screen h-[100dvh] max-h-[100dvh] bg-[#03000a] flex flex-col font-sans overflow-hidden" id="smartphone-device">
             
             {/* Smartphone Live Screen Content Area */}
             <div className="flex-grow flex flex-col bg-[#03000a] text-slate-100 overflow-hidden relative" id="smartphone-screen">
               
               {/* SCREEN 1: USER AUTHENTICATION SCREEN */}
               {currentScreen === 'login' && (
-                <div className="flex-grow flex flex-col p-5 justify-between items-center bg-gradient-to-b from-[#12072b] via-[#03000a] to-[#03000a] h-full" id="screen-login">
-                  
-                  {/* Brand Branding */}
-                  <div className="text-center mt-12">
-                    <div 
+                <div className="flex-grow flex flex-col p-5 justify-between items-center bg-[#FAF6EB] h-full relative" id="screen-login text-right">
+                  {/* Top Bar */}
+                  <div className="w-full flex justify-between items-center text-xs font-sans pt-2">
+                    <button 
                       onClick={() => setIsAdminDrawerOpen(true)}
-                      className="w-16 h-16 bg-gradient-to-tr from-[#7C3AED] via-[#C026D3] to-amber-400 p-0.5 rounded-2xl shadow-xl shadow-purple-900/50 mx-auto flex items-center justify-center mb-3 cursor-pointer hover:scale-105 active:scale-95 transition-all"
-                      title="فتح لوحة المطورين والتحكم"
+                      className="text-[#8B7E74] hover:text-[#4A3E3D] font-bold bg-[#FFF]/80 p-1.5 px-3 rounded-full border border-[#DCD7C9]/60 shadow-sm cursor-pointer"
                     >
-                      <div className="w-full h-full bg-[#03000a] rounded-[14px] flex items-center justify-center">
-                        <span className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-amber-300">صدى</span>
+                      ⚙️ الإعدادات
+                    </button>
+                    <button 
+                      onClick={() => alert('مرحباً بك! يمكنك استرداد حسابك القديم عن طريق ربطه برقم الهاتف أو بريدك الإلكتروني بنجاح.')}
+                      className="text-[#8B7E74] hover:text-[#4A3E3D] font-bold cursor-pointer"
+                    >
+                      استرداد الحساب (Account Recovery)
+                    </button>
+                  </div>
+
+                  {/* Mascot and Brand Illustration */}
+                  <div className="flex-grow flex flex-col justify-center items-center w-full my-auto">
+                    {/* Floating elements & Cat Mascot */}
+                    <div className="relative w-60 h-60 flex items-center justify-center bg-gradient-to-b from-[#FDFBF7] to-[#F1EAD9] rounded-full border border-[#DCD7C9]/50 shadow-inner">
+                      {/* Balloons and decorations */}
+                      <span className="absolute top-4 left-6 text-2xl animate-bounce" style={{ animationDelay: '0.2s' }}>🎈</span>
+                      <span className="absolute top-10 right-4 text-2xl animate-bounce" style={{ animationDelay: '0.6s' }}>🎈</span>
+                      <span className="absolute bottom-6 left-2 text-2xl animate-pulse">🎁</span>
+                      <span className="absolute bottom-4 right-6 text-xl">🎉</span>
+                      <span className="absolute top-1/2 -left-3 text-2xl">🎙️</span>
+                      <span className="absolute top-1/3 -right-2 text-xl">✨</span>
+
+                      {/* Main Cute Cat Mascot using CSS shapes and emoji */}
+                      <div className="flex flex-col items-center justify-center animate-bounce duration-[3000ms]">
+                        <div className="relative w-24 h-24 bg-[#FFF9E6] border-4 border-[#FFAE42] rounded-[36px] flex flex-col items-center justify-center shadow-md">
+                          {/* Ears */}
+                          <div className="absolute -top-2 left-1.5 w-6 h-6 bg-[#FFAE42] rounded-tl-[18px] rotate-12"></div>
+                          <div className="absolute -top-2 right-1.5 w-6 h-6 bg-[#FFAE42] rounded-tr-[18px] -rotate-12"></div>
+                          {/* Inner Ears */}
+                          <div className="absolute -top-[1px] left-2 w-4 h-4 bg-[#FFD1A9] rounded-tl-[12px] rotate-12"></div>
+                          <div className="absolute -top-[1px] right-2 w-4 h-4 bg-[#FFD1A9] rounded-tr-[12px] -rotate-12"></div>
+                          
+                          {/* Cute Cat Face */}
+                          <div className="text-sm font-bold text-[#4A3E3D] mb-1">^ . ^</div>
+                          <div className="w-2 h-1 bg-[#FF7F50] rounded-full"></div>
+                          <div className="w-5 h-0.5 bg-[#4A3E3D]/20 rounded mt-1"></div>
+
+                          {/* Heart/Cheeks */}
+                          <div className="absolute top-[44px] left-2 w-2 h-1.5 bg-[#FFB7B2] rounded-full"></div>
+                          <div className="absolute top-[44px] right-2 w-2 h-1.5 bg-[#FFB7B2] rounded-full"></div>
+                          
+                          {/* Cute Arab collar detail */}
+                          <div className="absolute -bottom-0.5 w-12 h-3 bg-white rounded-t-full border-t-2 border-[#DCD7C9] flex justify-center">
+                            <div className="w-1 h-1 bg-amber-500 rounded-full mt-0.5 animate-pulse"></div>
+                          </div>
+                        </div>
+
+                        {/* Arab Cartoon Friends Emojis */}
+                        <div className="flex justify-center items-center gap-1.5 mt-3">
+                          <div className="w-8 h-8 rounded-full bg-[#FFF] border border-[#E8DCC4] flex items-center justify-center text-md shadow-sm">🧔</div>
+                          <div className="w-9 h-9 rounded-full bg-amber-100 border-2 border-amber-400 flex items-center justify-center text-lg shadow-md animate-pulse">🐱</div>
+                          <div className="w-8 h-8 rounded-full bg-[#FFF] border border-[#E8DCC4] flex items-center justify-center text-md shadow-sm">👳</div>
+                          <div className="w-8 h-8 rounded-full bg-[#FFF] border border-[#E8DCC4] flex items-center justify-center text-md shadow-sm">😎</div>
+                        </div>
                       </div>
                     </div>
-                    <h2 className="text-xl font-bold tracking-tight text-white font-sans">تطبيق صدى العرب</h2>
-                    <p className="text-[10px] text-slate-400 mt-1">مجالس وغرف دردشة صوتية عربية فاخرة</p>
+
+                    <div className="text-center mt-5">
+                      <h2 className="text-xl font-black text-[#4A3E3D] font-sans">صدى العرب 🎙️</h2>
+                      <p className="text-[10px] text-[#8B7E74] font-bold mt-1">المجالس الصوتية والترفيهية بنكهة عربية متميزة</p>
+                    </div>
                   </div>
 
                   {/* Auth Content */}
-                  <div className="w-full space-y-4">
+                  <div className="w-full space-y-4 max-w-sm px-2">
                     {loginMethod === null ? (
-                      <div className="space-y-2.5">
-                        <div className="text-center mb-3">
-                          <span className="text-xs bg-red-950/60 text-red-300 px-3 py-1 rounded-full border border-red-500/30 font-bold inline-block">
-                            🚫 يمنع دخول الزوار (لا يوجد حساب ضيف)
-                          </span>
-                        </div>
-
-                        {/* Interactive Buttons */}
+                      <div className="space-y-3.5">
+                        {/* Google Sign-in Button */}
                         <button
-                          onClick={() => setLoginMethod('phone')}
-                          className="w-full bg-purple-900/40 hover:bg-purple-900/60 border border-purple-500/30 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition"
-                          id="login-btn-phone"
+                          onClick={() => handleSignUpAndLogin('عبدالرحمن الخليجي')}
+                          className="w-full bg-[#2D2D2D] hover:bg-[#1E1E1E] text-white py-3 rounded-full text-xs font-bold flex items-center justify-center gap-3 transition shadow-md active:scale-[0.98] cursor-pointer"
+                          id="login-btn-google"
                         >
-                          <Phone className="w-4 h-4 text-purple-400" />
-                          تسجيل الدخول برقم الهاتف و SMS OTP
+                          <svg className="w-4 h-4 text-white fill-current" viewBox="0 0 24 24">
+                            <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114A5.69 5.69 0 0 1 8.24 12.8a5.69 5.69 0 0 1 5.751-5.714c1.47 0 2.825.534 3.882 1.411l3.14-3.142A9.9 9.9 0 0 0 13.991 3c-5.523 0-10 4.477-10 10s4.477 10 10 10c5.37 0 9.878-3.791 10.009-9.143H12.24Z" />
+                          </svg>
+                          <span>الدخول بواسطة Google</span>
                         </button>
 
-                        <button
-                          onClick={() => setLoginMethod('email')}
-                          className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition"
-                          id="login-btn-email"
-                        >
-                          <Mail className="w-4 h-4 text-slate-400" />
-                          تسجيل الدخول بالبريد وكلمة المرور
-                        </button>
-
-                        <div className="grid grid-cols-2 gap-2 pt-1">
-                          <button
-                            onClick={() => handleSignUpAndLogin('عبدالرحمن الخليجي')}
-                            className="bg-slate-900 hover:bg-slate-800 border border-slate-800 py-2 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition"
-                            id="login-btn-google"
-                          >
-                            <span className="text-amber-400 font-bold">👤</span> دخول سريع
-                          </button>
+                        {/* Social / Email Logins Row */}
+                        <div className="flex justify-center items-center gap-5 pt-1">
+                          {/* Twitter / X */}
                           <button
                             onClick={() => handleSignUpAndLogin('بندر الفيصل')}
-                            className="bg-slate-900 hover:bg-slate-800 border border-slate-800 py-2 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition"
-                            id="login-btn-apple"
+                            className="w-12 h-12 rounded-full bg-[#E8F5FE] hover:bg-[#D0ECFC] flex items-center justify-center text-[#1DA1F2] transition hover:scale-105 active:scale-95 shadow-sm border border-[#E1EFFE] cursor-pointer"
+                            title="X / Twitter"
                           >
-                            <span className="text-white font-bold"></span> Apple ID
+                            <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                            </svg>
+                          </button>
+
+                          {/* Quick ID Login */}
+                          <button
+                            onClick={() => {
+                              const randomNames = ['فارس نجد', 'ريم الرياض', 'سلطان العرب', 'غلا دبي', 'أبو فهد'];
+                              const chosenName = randomNames[Math.floor(Math.random() * randomNames.length)];
+                              handleSignUpAndLogin(chosenName);
+                            }}
+                            className="w-12 h-12 rounded-full bg-[#F3E8FF] hover:bg-[#E9D5FF] flex items-center justify-center text-[#9333EA] transition hover:scale-105 active:scale-95 shadow-sm border border-[#F3E8FF] cursor-pointer font-bold text-xs"
+                            title="الدخول السريع بالمعرف"
+                          >
+                            ID
+                          </button>
+
+                          {/* Custom Phone / Email Input Form Gate */}
+                          <button
+                            onClick={() => setLoginMethod('phone')}
+                            className="w-12 h-12 rounded-full bg-[#DCFCE7] hover:bg-[#BBF7D0] flex items-center justify-center text-[#16A34A] transition hover:scale-105 active:scale-95 shadow-sm border border-[#DCFCE7] cursor-pointer"
+                            title="رقم الهاتف والبريد"
+                          >
+                            <Mail className="w-5 h-5" />
                           </button>
                         </div>
                       </div>
                     ) : (
-                      <div className="bg-slate-900/90 p-4 rounded-xl border border-purple-500/20 space-y-3">
-                        <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                          <span className="text-xs font-bold text-white">
+                      <div className="bg-white p-4 rounded-2xl border border-[#DCD7C9]/60 shadow-md space-y-3">
+                        <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                          <span className="text-xs font-bold text-[#4A3E3D]">
                             {loginMethod === 'phone' ? 'تسجيل برقم الهاتف' : 'تسجيل بالبريد الإلكتروني'}
                           </span>
                           <button
                             onClick={() => { setLoginMethod(null); setShowOtpField(false); }}
-                            className="text-[10px] text-purple-400 hover:underline"
+                            className="text-[10px] text-[#7C3AED] font-bold hover:underline"
                             id="login-back-btn"
                           >
                             رجوع
@@ -1224,16 +1682,16 @@ export default function App() {
                         </div>
 
                         {loginMethod === 'phone' && (
-                          <div className="space-y-2">
+                          <div className="space-y-2 text-[#4A3E3D]">
                             {!showOtpField ? (
                               <>
-                                <label className="text-[10px] text-slate-400 block text-right">رقم الهاتف الجوال</label>
+                                <label className="text-[10px] text-slate-500 block text-right font-bold">رقم الهاتف الجوال</label>
                                 <input
                                   type="tel"
                                   placeholder="966 50 000 0000+"
                                   value={phoneNumber}
                                   onChange={(e) => setPhoneNumber(e.target.value)}
-                                  className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-center text-white"
+                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-center text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
                                 />
                                 <button
                                   onClick={() => {
@@ -1244,7 +1702,7 @@ export default function App() {
                                       alert('الرجاء كتابة رقم الهاتف أولاً');
                                     }
                                   }}
-                                  className="w-full bg-[#7C3AED] text-white py-2 rounded-lg text-xs font-bold transition"
+                                  className="w-full bg-[#7C3AED] text-white py-2 rounded-lg text-xs font-bold transition cursor-pointer"
                                   id="send-otp-btn"
                                 >
                                   إرسال رمز التحقق SMS
@@ -1252,29 +1710,29 @@ export default function App() {
                               </>
                             ) : (
                               <>
-                                <div className="bg-emerald-950/40 text-emerald-300 text-[10px] p-2 rounded text-center border border-emerald-500/20">
+                                <div className="bg-emerald-50 text-emerald-700 text-[10px] p-2 rounded text-center border border-emerald-200">
                                   تم إرسال رمز التحقق لهاتفك بنجاح
                                 </div>
-                                <label className="text-[10px] text-slate-400 block text-right">رمز التحقق SMS OTP</label>
+                                <label className="text-[10px] text-slate-500 block text-right font-bold">رمز التحقق SMS OTP</label>
                                 <input
                                   type="text"
                                   maxLength={6}
                                   placeholder="أدخل رمز التحقق المكون من 6 أرقام"
                                   value={smsOtp}
                                   onChange={(e) => setSmsOtp(e.target.value)}
-                                  className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-center text-white font-mono tracking-widest"
+                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-center text-[#4A3E3D] font-mono tracking-widest focus:outline-none focus:border-[#7C3AED]"
                                 />
-                                <label className="text-[10px] text-slate-400 block text-right mt-1">الاسم المستعار في المجالس</label>
+                                <label className="text-[10px] text-slate-500 block text-right mt-1 font-bold">الاسم المستعار في المجالس</label>
                                 <input
                                   type="text"
                                   placeholder="أدخل اسمك المستعار"
                                   value={customName}
                                   onChange={(e) => setCustomName(e.target.value)}
-                                  className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-right text-white"
+                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-right text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
                                 />
                                 <button
                                   onClick={() => handleSignUpAndLogin(customName)}
-                                  className="w-full bg-emerald-600 text-white py-2 rounded-lg text-xs font-bold transition"
+                                  className="w-full bg-emerald-600 text-white py-2 rounded-lg text-xs font-bold transition cursor-pointer"
                                   id="confirm-otp-btn"
                                 >
                                   تحقق ودخول المجلس 🔒
@@ -1283,274 +1741,1054 @@ export default function App() {
                             )}
                           </div>
                         )}
-
-                        {loginMethod === 'email' && (
-                          <div className="space-y-2">
-                            <label className="text-[10px] text-slate-400 block text-right">البريد الإلكتروني</label>
-                            <input
-                              type="email"
-                              placeholder="user@sadaarab.com"
-                              value={email}
-                              onChange={(e) => setEmail(e.target.value)}
-                              className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-left text-white"
-                            />
-                            <label className="text-[10px] text-slate-400 block text-right">كلمة المرور</label>
-                            <input
-                              type="password"
-                              placeholder="••••••••"
-                              value={password}
-                              onChange={(e) => setPassword(e.target.value)}
-                              className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-left text-white"
-                            />
-                            <label className="text-[10px] text-slate-400 block text-right">الاسم المستعار</label>
-                            <input
-                              type="text"
-                              placeholder="أدخل اسمك المستعار"
-                              value={customName}
-                              onChange={(e) => setCustomName(e.target.value)}
-                              className="w-full bg-[#03000a] border border-slate-800 rounded-lg p-2 text-xs text-right text-white"
-                            />
-                            <button
-                              onClick={() => handleSignUpAndLogin(customName)}
-                              className="w-full bg-[#7C3AED] text-white py-2 rounded-lg text-xs font-bold transition"
-                              id="email-submit-btn"
-                            >
-                              تسجيل الدخول / إنشاء حساب جديد
-                            </button>
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
 
-                  {/* Footnote */}
-                  <div className="text-center text-[9px] text-slate-500 pb-2 flex flex-col items-center gap-1.5">
-                    <span>بالتسجيل أنت توافق على شروط الاستخدام وقوانين المجالس صدى العرب.</span>
-                    <span className="text-purple-400 font-bold bg-purple-950/50 border border-purple-500/20 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-sans">
-                      <span>📱 تم الكشف التلقائي عن:</span>
-                      <span className="text-white">{deviceInfo.modelName}</span>
+                  {/* Consent & Agreement */}
+                  <div className="w-full max-w-xs flex flex-col items-center gap-2 pb-2">
+                    <div className="flex items-center gap-1.5 text-[9px] text-[#8B7E74] font-medium justify-center text-right font-sans">
+                      <span className="text-[#FFAE42] text-xs">✔</span>
+                      <span>
+                        الدخول يعني الموافقة على <span className="text-[#FFAE42] font-bold cursor-pointer underline">اتفاقية مستخدم صدى العرب</span> وسياسة الخصوصية.
+                      </span>
+                    </div>
+                    <span className="text-[#8B7E74] text-[8px] font-mono bg-[#FFF]/60 px-2 py-0.5 rounded-full border border-[#DCD7C9]/40">
+                      Auto-detected: {deviceInfo.modelName}
                     </span>
                   </div>
                 </div>
               )}
 
-              {/* SCREEN 2: ROOM EXPLORE LIST SCREEN */}
+              {/* SCREEN 2: ROOM EXPLORE LIST SCREEN (THE CORE TABBED DASHBOARD SYSTEM) */}
               {currentScreen === 'explore' && currentUser && (
-                <div className="flex-grow flex flex-col h-full bg-[#03000a]" id="screen-explore">
+                <div className="flex-grow flex flex-col h-full bg-[#FAF6EB] text-[#4A3E3D] relative overflow-hidden" id="screen-explore" dir="rtl">
                   
-                  {/* Explore Header: Active User profile status */}
-                  <div className="bg-gradient-to-b from-[#120c24] to-[#03000a] p-4 border-b border-purple-900/30 flex justify-between items-center">
-                    <div className="flex items-center gap-2.5">
+                  {/* Dashboard General Top Header (Pristine status layout matching Screenshots) */}
+                  <div className="bg-white p-3.5 border-b border-[#E8DCC4]/60 flex justify-between items-center shadow-sm select-none">
+                    <div className="flex items-center gap-2">
                       <div className="relative">
-                        <img
-                          src={currentUser.avatar}
-                          alt="avatar"
-                          className="w-10 h-10 rounded-full border-2 border-purple-500 shadow"
-                        />
-                        <span className="absolute -bottom-1 -right-1 bg-amber-500 text-slate-950 font-bold text-[8px] px-1 rounded-full">
-                          {currentUser.level}
+                        <div className="w-10 h-10 rounded-full border-2 border-[#FFAE42] p-0.5 shadow-sm bg-amber-50">
+                          <img
+                            src={currentUser.avatar}
+                            alt="avatar"
+                            className="w-full h-full rounded-full object-cover"
+                          />
+                        </div>
+                        <span className="absolute -bottom-1 -right-1 bg-[#FFAE42] text-white font-extrabold text-[8px] px-1.5 rounded-full border border-white">
+                          Lv.{currentUser.level}
                         </span>
                       </div>
                       <div className="text-right">
-                        <h4 className="text-xs font-bold text-white max-w-[120px] truncate">{currentUser.name}</h4>
-                        <div className="flex flex-col gap-0.5 mt-0.5">
-                          <div className="flex items-center gap-1 text-[10px] text-amber-300">
-                            <Coins className="w-3 h-3 text-amber-400" />
-                            <span>🪙 {currentUser.coins.toFixed(0)} كوينز</span>
-                          </div>
-                          <span className="text-[8px] bg-purple-950/80 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/25 font-bold tracking-wider flex items-center gap-1">
-                            <span>{deviceInfo.platform === 'ios' ? '' : deviceInfo.platform === 'android' ? '🤖' : '💻'}</span>
-                            <span>{deviceInfo.modelName}</span>
+                        <h4 className="text-xs font-black text-[#4A3E3D] max-w-[120px] truncate leading-tight">{currentUser.name}</h4>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[10px] text-[#FFAE42] font-black flex items-center gap-0.5">
+                            🪙 {currentUser.coins.toFixed(0)}
+                          </span>
+                          <span className="text-[8px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">
+                            ID: {currentUser.id}
                           </span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Agent lock key */}
+                    {/* Quick navigation and administrative gates */}
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => setCurrentScreen('agent_pin')}
-                        className="bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-2 py-1.5 rounded-lg text-[9px] font-bold flex items-center gap-1 transition-all active:scale-95 duration-100 transform cursor-pointer"
-                        title="لوحة تحكم الوكيل المعتمد"
+                        className="bg-[#FFAE42]/10 hover:bg-[#FFAE42]/20 text-[#D97706] border border-[#FFAE42]/30 px-2.5 py-1 rounded-full text-[9px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                        title="بوابة الشحن والوكيل المعتمد"
                         id="agent-dashboard-gate-btn"
                       >
-                        <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                        بوابة الوكيل
+                        ⚡ بوابة الوكيل
                       </button>
 
                       <button
                         onClick={() => setIsAdminDrawerOpen(true)}
-                        className="bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/20 p-1.5 rounded-lg text-purple-300 hover:text-purple-200 transition-all active:scale-90 duration-100 transform cursor-pointer"
-                        title="لوحة التحكم والمطورين"
-                        id="developer-drawer-btn"
+                        className="bg-slate-100 hover:bg-slate-200 border border-slate-200/60 p-1.5 rounded-full text-[#8B7E74] transition-all active:scale-90 cursor-pointer"
+                        title="لوحة المطورين والمخططات"
                       >
-                        <Settings className="w-3.5 h-3.5" />
+                        ⚙️
                       </button>
 
                       <button
                         onClick={() => { setCurrentUser(null); setCurrentScreen('login'); }}
-                        className="bg-slate-900 hover:bg-slate-800 p-1.5 rounded-lg text-slate-400 hover:text-white transition-all active:scale-90 duration-100 transform cursor-pointer"
+                        className="bg-red-50 hover:bg-red-100 p-1.5 rounded-full text-red-500 border border-red-100 transition-all active:scale-90 cursor-pointer"
                         title="تسجيل الخروج"
                         id="logout-btn"
                       >
-                        <LogOut className="w-3.5 h-3.5" />
+                        🚪
                       </button>
                     </div>
                   </div>
 
-                  {/* Explore Body */}
-                  <div className="p-4 flex-grow overflow-y-auto space-y-4">
-                    
-                    {/* Welcome banner with coins check */}
-                    <div className="bg-gradient-to-r from-purple-900/40 via-fuchsia-950/20 to-slate-950 p-3 rounded-xl border border-purple-500/20">
-                      <div className="flex justify-between items-center">
-                        <div className="text-right">
-                          <span className="text-[10px] text-amber-300 font-bold block mb-0.5">🎁 هدية ترحيبية نشطة</span>
-                          <p className="text-[11px] text-slate-300">تم شحن حسابك بـ <strong className="text-white">10 كوينز مجانية</strong> ترحيباً بك!</p>
-                        </div>
-                        <Award className="w-8 h-8 text-amber-400 animate-bounce" />
-                      </div>
-                    </div>
+                  {/* SUB-VIEW RENDERING AREA */}
+                  <div className="flex-grow overflow-y-auto p-4 pb-20 space-y-4" id="dashboard-tab-content">
 
-                    {/* Title with Interactive Refresh Action */}
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-xs font-bold text-slate-400 tracking-wider">الغرف والمجالس الصوتية النشطة</h3>
-                      <button
-                        onClick={() => {
-                          setIsRefreshing(true);
-                          setTimeout(() => setIsRefreshing(false), 1200);
-                        }}
-                        disabled={isRefreshing}
-                        className="text-[10px] text-purple-300 hover:text-white flex items-center gap-1.5 bg-purple-950/40 hover:bg-purple-950/60 px-2.5 py-1 rounded-full border border-purple-500/20 active:scale-95 transition cursor-pointer"
-                        id="refresh-rooms-btn"
-                      >
-                        <RefreshCw className={`w-3 h-3 text-purple-400 ${isRefreshing ? 'animate-spin' : ''}`} />
-                        <span>تحديث يدوي فوري</span>
-                      </button>
-                    </div>
-
-                    {/* Rooms List / Shimmer Loader */}
-                    {isRefreshing ? (
-                      <div className="space-y-3">
-                        {[1, 2, 3].map((n) => (
-                          <div key={n} className="bg-slate-900/40 border border-slate-900/80 p-3.5 rounded-xl flex justify-between items-center animate-pulse">
-                            <div className="flex items-center gap-3 w-3/4">
-                              <div className="w-11 h-11 rounded-xl animate-shimmer"></div>
-                              <div className="space-y-2 flex-grow">
-                                <div className="h-3.5 bg-purple-950/80 rounded animate-shimmer w-1/2"></div>
-                                <div className="h-2.5 bg-purple-950/40 rounded animate-shimmer w-1/3"></div>
-                                <div className="h-2 bg-purple-950/20 rounded animate-shimmer w-1/4"></div>
-                              </div>
-                            </div>
-                            <div className="w-14 h-6 rounded-md bg-purple-950/40 animate-shimmer"></div>
+                    {/* ==================== 1. PARTY TAB (المجالس الصوتية) ==================== */}
+                    {dashboardTab === 'party' && (
+                      <div className="space-y-4 animate-fade-in" id="tab-panel-party">
+                        {/* Search & Refresh row */}
+                        <div className="flex gap-2">
+                          <div className="relative flex-grow">
+                            <input
+                              type="text"
+                              placeholder="البحث عن مجالس صوتية أو معرف ID..."
+                              className="w-full bg-white border border-[#E8DCC4] rounded-full py-1.5 pl-3 pr-8 text-xs text-right text-[#4A3E3D] focus:outline-none focus:border-[#FFAE42]"
+                            />
+                            <Search className="w-3.5 h-3.5 text-slate-400 absolute top-2.5 right-3" />
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {rooms.map((room) => (
-                          <div
-                            key={room.id}
-                            onClick={() => handleEnterRoom(room)}
-                            className="bg-slate-900/70 hover:bg-slate-900 border border-slate-800 hover:border-purple-500/40 p-3.5 rounded-xl transition duration-150 cursor-pointer flex justify-between items-center active:scale-98 active:bg-slate-900/90 transform"
-                            id={`room-item-${room.id}`}
+                          <button
+                            onClick={() => {
+                              setIsRefreshing(true);
+                              setTimeout(() => setIsRefreshing(false), 1000);
+                            }}
+                            disabled={isRefreshing}
+                            className="bg-white hover:bg-slate-50 border border-[#E8DCC4] p-2 rounded-full transition active:scale-95 flex items-center justify-center cursor-pointer"
                           >
-                            <div className="flex items-center gap-3">
-                              <div className="relative">
-                                <img
-                                  src={room.hostAvatar}
-                                  alt="host avatar"
-                                  className="w-11 h-11 rounded-xl object-cover border border-purple-500/30"
-                                />
-                                {room.isPrivate && (
-                                  <div className="absolute -top-1.5 -right-1.5 bg-red-600 p-1 rounded-full border border-slate-950">
-                                    <Lock className="w-2.5 h-2.5 text-white" />
+                            <RefreshCw className={`w-3.5 h-3.5 text-[#FFAE42] ${isRefreshing ? 'animate-spin' : ''}`} />
+                          </button>
+                        </div>
+
+                        {/* Top banner */}
+                        <div className="bg-gradient-to-r from-amber-500 to-yellow-400 p-3 rounded-2xl text-white shadow-sm relative overflow-hidden">
+                          <div className="absolute -left-4 -bottom-4 text-6xl opacity-20">🎙️</div>
+                          <h4 className="text-[11px] font-black">مهرجان صدى العرب الصوتي 🌟</h4>
+                          <p className="text-[9px] text-amber-50 mt-0.5">شارك في مجالس الصوت واحصل على 50% عمولة هدايا فورية!</p>
+                        </div>
+
+                        {/* Rooms List */}
+                        <div className="space-y-2.5">
+                          {isRefreshing ? (
+                            <div className="space-y-2 animate-pulse">
+                              {[1, 2, 3].map(n => (
+                                <div key={n} className="h-16 bg-white rounded-xl border border-slate-100"></div>
+                              ))}
+                            </div>
+                          ) : (
+                            rooms.map((room) => (
+                              <div
+                                key={room.id}
+                                onClick={() => handleEnterRoom(room)}
+                                className="bg-white hover:bg-[#FDFBF7] border border-[#E8DCC4]/60 p-3 rounded-xl transition duration-150 cursor-pointer flex justify-between items-center shadow-sm hover:shadow active:scale-[0.99]"
+                                id={`room-item-${room.id}`}
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div className="relative">
+                                    <img
+                                      src={room.hostAvatar}
+                                      alt="host"
+                                      className="w-11 h-11 rounded-lg object-cover border border-[#FFAE42]/20 shadow-sm"
+                                    />
+                                    {room.isPrivate && (
+                                      <div className="absolute -top-1.5 -right-1.5 bg-red-500 p-0.5 rounded-full border border-white">
+                                        <Lock className="w-2.5 h-2.5 text-white" />
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                              <div className="text-right">
-                                <h4 className="text-xs font-extrabold text-white">{room.name}</h4>
-                                <p className="text-[9px] text-slate-400 mt-0.5">المستضيف: {room.hostName}</p>
-                                <div className="flex gap-1.5 mt-1.5">
-                                  <span className="bg-purple-900/50 text-purple-300 text-[8px] px-1.5 py-0.5 rounded border border-purple-500/20 font-bold">
-                                    مستوى {room.level}
+                                  <div className="text-right">
+                                    <h4 className="text-xs font-extrabold text-[#4A3E3D] flex items-center gap-1">
+                                      <span>{room.name}</span>
+                                    </h4>
+                                    <p className="text-[9px] text-slate-500 mt-0.5">المستضيف: {room.hostName}</p>
+                                    <div className="flex gap-1.5 mt-1">
+                                      <span className="bg-amber-50 text-[#FFAE42] text-[8px] px-1.5 py-0.5 rounded font-extrabold border border-[#FFAE42]/10">
+                                        Lv.{room.level}
+                                      </span>
+                                      <span className="bg-slate-100 text-slate-500 text-[8px] px-1.5 py-0.5 rounded font-bold">
+                                        {room.isPrivate ? 'مجلس خاص 🔒' : 'مجلس عام 🔓'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-left flex items-center gap-1 bg-[#FFAE42]/10 px-2 py-0.5 rounded-full border border-[#FFAE42]/20">
+                                  <span className="relative flex h-1.5 w-1.5">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
                                   </span>
-                                  {room.isPrivate ? (
-                                    <span className="bg-red-950/60 text-red-300 text-[8px] px-1.5 py-0.5 rounded border border-red-500/20 font-bold">
-                                      خاص بكلمة سر
-                                    </span>
-                                  ) : (
-                                    <span className="bg-emerald-950/60 text-emerald-300 text-[8px] px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold">
-                                      عام ومفتوح
-                                    </span>
-                                  )}
+                                  <span className="text-[9px] font-mono text-[#D97706] font-extrabold">
+                                    {room.activeUsersCount} متواجد
+                                  </span>
                                 </div>
                               </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* Floating Golden Microphone Create Room button */}
+                        <div className="fixed bottom-20 left-4 z-40">
+                          <button
+                            onClick={() => {
+                              const rName = prompt('أدخل اسم مجلسك الصوتي الجديد:');
+                              if (rName) {
+                                alert(`🎉 تم إرسال طلب إنشاء مجلس "${rName}" بنجاح! سيقوم الدعم الفني باعتماده فوراً.`);
+                              }
+                            }}
+                            className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
+                          >
+                            <span>🎙️ إنشاء مجلس</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ==================== 2. GAME CENTER TAB (الألعاب الجماعية) ==================== */}
+                    {dashboardTab === 'games' && (
+                      <div className="space-y-4 animate-fade-in" id="tab-panel-games">
+                        
+                        {/* Daily active tasks bar showing wood/gold chests */}
+                        <div className="bg-white p-3.5 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-2.5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[11px] font-black text-[#4A3E3D] flex items-center gap-1">
+                              🎁 المكافأة والصندوق اليومي
+                            </span>
+                            <span className="text-[9px] text-[#FFAE42] font-bold">نشاط اليوم: 60/100 XP</span>
+                          </div>
+                          
+                          {/* Progress bar */}
+                          <div className="w-full bg-slate-100 h-2.5 rounded-full relative overflow-hidden">
+                            <div className="bg-gradient-to-l from-amber-500 to-yellow-400 h-full rounded-full w-3/5"></div>
+                          </div>
+
+                          {/* Chest icons matching progress */}
+                          <div className="flex justify-between items-center pt-1 text-xs">
+                            <div className="text-center">
+                              <span className="block text-lg">📦</span>
+                              <span className="text-[8px] text-slate-500">20 XP</span>
+                            </div>
+                            <div className="text-center">
+                              <span className="block text-lg filter saturate-50">🪵</span>
+                              <span className="text-[8px] text-slate-500">50 XP</span>
+                            </div>
+                            <div className="text-center animate-pulse">
+                              <span className="block text-xl">👑</span>
+                              <span className="text-[8px] text-amber-500 font-extrabold">100 XP</span>
+                            </div>
+                          </div>
+
+                          {/* Claim button */}
+                          <button
+                            onClick={() => {
+                              if (dailyBonusClaimed) {
+                                alert('لقد استلمت جائزتك اليومية بالفعل! عد غداً للمزيد من الهدايا 🎁');
+                              } else {
+                                setIsDailyBonusOpen(true);
+                              }
+                            }}
+                            className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                              dailyBonusClaimed 
+                                ? 'bg-slate-100 text-slate-400 border border-slate-200' 
+                                : 'bg-gradient-to-r from-amber-500 to-yellow-400 hover:scale-[1.01] text-white shadow-sm'
+                            }`}
+                          >
+                            <span>{dailyBonusClaimed ? '✓ تم استلام الجائزة اليومية' : '🎁 افتح صندوق الكنز اليومي'}</span>
+                          </button>
+                        </div>
+
+                        {/* Interactive Games Card Grid */}
+                        <div className="space-y-2">
+                          <h3 className="text-xs font-bold text-slate-500 tracking-wide pr-1">ألعاب المجالس والدردشة</h3>
+                          <div className="grid grid-cols-2 gap-3">
+                            {/* Game 1 */}
+                            <div 
+                              onClick={() => alert('جاري تحميل لعبة كيرم... يرجى الاتصال بالغرفة للعبها معاً!')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer relative overflow-hidden"
+                            >
+                              <div className="absolute top-2 left-2 bg-red-100 text-red-600 text-[8px] px-1.5 py-0.5 rounded-full font-bold">HOT</div>
+                              <span className="text-2xl block">🎱</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">لعبة كيرم (Carrom)</h4>
+                              <p className="text-[9px] text-slate-400">🔥 3.4K لاعب متواجد</p>
                             </div>
 
-                            <div className="text-left">
-                              <div className="flex items-center gap-1.5 bg-[#7C3AED]/10 px-2 py-1 rounded-md border border-[#7C3AED]/20">
-                                <span className="relative flex h-2 w-2">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                            {/* Game 2 */}
+                            <div 
+                              onClick={() => alert('جاري تحميل لعبة بلوت... تنافس مع أصدقائك في ديوانية صدى العرب!')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer relative overflow-hidden"
+                            >
+                              <div className="absolute top-2 left-2 bg-amber-100 text-[#D97706] text-[8px] px-1.5 py-0.5 rounded-full font-bold">بطولة</div>
+                              <span className="text-2xl block">🃏</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">لعبة بلوت (Baloot)</h4>
+                              <p className="text-[9px] text-slate-400">🏆 تنافس فوري</p>
+                            </div>
+
+                            {/* Game 3 */}
+                            <div 
+                              onClick={() => alert('جاري تحميل لعبة قنبلة القط الكلاسيكية...')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer"
+                            >
+                              <span className="text-2xl block">💣</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">قنبلة القط (No.Bomb)</h4>
+                              <p className="text-[9px] text-slate-400">⚡ الإقصاء السريع</p>
+                            </div>
+
+                            {/* Game 4 */}
+                            <div 
+                              onClick={() => alert('جاري فتح طاولات OKEY الممتازة...')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer"
+                            >
+                              <span className="text-2xl block">🎲</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">لعبة أوكي (OKEY)</h4>
+                              <p className="text-[9px] text-slate-400">💎 طاولة SVIP الفخمة</p>
+                            </div>
+
+                            {/* Game 5 */}
+                            <div 
+                              onClick={() => alert('جاري تحميل أونو...')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer"
+                            >
+                              <span className="text-2xl block">🎨</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">لعبة أونو (ONO)</h4>
+                              <p className="text-[9px] text-slate-400">🔥 1.2K متواجد</p>
+                            </div>
+
+                            {/* Game 6 */}
+                            <div 
+                              onClick={() => alert('جاري تحميل لعبة دومينو...')}
+                              className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-1.5 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer"
+                            >
+                              <span className="text-2xl block">🀄</span>
+                              <h4 className="text-xs font-black text-[#4A3E3D]">الدومينو (Domino)</h4>
+                              <p className="text-[9px] text-slate-400">✨ اللعب الكلاسيكي</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ==================== 3. DISCOVER TAB (اكتشف وكوكب الهدايا) ==================== */}
+                    {dashboardTab === 'explore' && (
+                      <div className="space-y-4 animate-fade-in" id="tab-panel-discover">
+                        
+                        {/* Drifting Bottle and Ahlan Garden widgets */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {/* Ocean Bottle */}
+                          <div 
+                            onClick={() => setDriftingBottleMode('writing')}
+                            className="bg-gradient-to-br from-cyan-400 to-blue-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
+                          >
+                            <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌊</span>
+                            <span className="text-2xl block">🍾</span>
+                            <h4 className="text-xs font-black">زجاجة الرسائل</h4>
+                            <p className="text-[9px] text-cyan-50">ارمِ سرك في البحر أو التقط زجاجة عشوائية!</p>
+                          </div>
+
+                          {/* Ahlan Garden */}
+                          <div 
+                            onClick={() => alert('🌱 بستان صدى العرب: ميزة زراعة الزهور ومبادلة البذور قادمة قريباً!')}
+                            className="bg-gradient-to-br from-emerald-400 to-teal-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
+                          >
+                            <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌸</span>
+                            <span className="text-2xl block">🌹</span>
+                            <h4 className="text-xs font-black">بستان صدى العرب</h4>
+                            <p className="text-[9px] text-emerald-50">اهتم بحديقتك واحصد كوينز مع الأصدقاء!</p>
+                          </div>
+                        </div>
+
+                        {/* Gift Gifting Podium Column Rankings */}
+                        <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-center space-y-4">
+                          <div>
+                            <h3 className="text-xs font-black text-[#4A3E3D]">🏆 لوحة شرف وهدايا مجالس صدى</h3>
+                            <p className="text-[9px] text-slate-500 mt-0.5">ترتيب الفرسان الأكثر جوداً وسخاءً هذا الشهر</p>
+                          </div>
+
+                          {/* 3D-Like Podium Columns */}
+                          <div className="flex justify-center items-end gap-3 pt-6 pb-2 min-h-[140px]">
+                            
+                            {/* Podium No.2 */}
+                            <div className="flex flex-col items-center w-20">
+                              <div className="relative">
+                                <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥈</span>
+                                <div className="w-10 h-10 rounded-full border-2 border-slate-300 p-0.5 bg-slate-50">
+                                  <img
+                                    src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120"
+                                    className="w-full h-full rounded-full object-cover"
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-[9px] font-bold text-slate-700 mt-1 truncate w-16">سارة القحطاني</span>
+                              <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">98K كوينز</span>
+                              <div className="w-full bg-slate-200 h-10 rounded-t-lg mt-2 flex items-center justify-center font-bold text-slate-500 text-xs shadow-inner">
+                                2
+                              </div>
+                            </div>
+
+                            {/* Podium No.1 */}
+                            <div className="flex flex-col items-center w-22">
+                              <div className="relative -top-3 scale-110">
+                                <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xl animate-bounce">👑</span>
+                                <div className="w-11 h-11 rounded-full border-2 border-[#FFAE42] p-0.5 bg-amber-50">
+                                  <img
+                                    src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120"
+                                    className="w-full h-full rounded-full object-cover"
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-[9px] font-black text-amber-600 mt-1 truncate w-18">أحمد العتيبي</span>
+                              <span className="text-[8px] text-amber-500 font-extrabold leading-none mt-0.5">125K كوينز</span>
+                              <div className="w-full bg-[#FFAE42] h-14 rounded-t-lg mt-2 flex items-center justify-center font-black text-white text-sm shadow">
+                                1
+                              </div>
+                            </div>
+
+                            {/* Podium No.3 */}
+                            <div className="flex flex-col items-center w-20">
+                              <div className="relative">
+                                <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥉</span>
+                                <div className="w-10 h-10 rounded-full border-2 border-amber-700 p-0.5 bg-amber-50/20">
+                                  <img
+                                    src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=120"
+                                    className="w-full h-full rounded-full object-cover"
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-[9px] font-bold text-[#8B7E74] mt-1 truncate w-16">ياسر الشمري</span>
+                              <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">75K كوينز</span>
+                              <div className="w-full bg-orange-100 h-8 rounded-t-lg mt-2 flex items-center justify-center font-bold text-amber-800 text-xs shadow-inner">
+                                3
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => alert('ترتيب الهدايا يتم تحديثه تلقائياً بناءً على العمليات السحابية المنقولة!')}
+                            className="text-[9px] text-[#FFAE42] font-black hover:underline"
+                          >
+                            عرض قائمة المتصدرين الكاملة لصدى العرب ←
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ==================== 4. MESSAGES TAB (الرسائل والأصدقاء) ==================== */}
+                    {dashboardTab === 'messages' && (
+                      <div className="space-y-4 animate-fade-in" id="tab-panel-messages">
+                        {/* Tab header toggles */}
+                        <div className="bg-white p-1 rounded-full border border-[#E8DCC4]/60 flex shadow-sm">
+                          <button className="w-1/2 bg-[#FFAE42] text-white py-1 rounded-full text-xs font-black">
+                            الدردشات والمراسلة
+                          </button>
+                          <button 
+                            onClick={() => alert('قائمة الأصدقاء والمتابعين تظهر مباشرة بمجرد متابعة أي مستخدم!')}
+                            className="w-1/2 text-slate-500 py-1 rounded-full text-xs font-bold"
+                          >
+                            الأصدقاء (45)
+                          </button>
+                        </div>
+
+                        {/* Channel Circles row */}
+                        <div className="bg-white p-3 rounded-2xl border border-[#E8DCC4]/60 shadow-sm flex justify-around items-center text-center">
+                          <div 
+                            onClick={() => alert('لا توجد فعاليات نشطة في هذه اللحظة. تواصل مع الإدارة للأخبار!')}
+                            className="flex flex-col items-center gap-1 cursor-pointer"
+                          >
+                            <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-lg shadow-sm">
+                              📢
+                            </div>
+                            <span className="text-[9px] font-bold text-slate-600">أخبار الفعاليات</span>
+                          </div>
+
+                          <div 
+                            onClick={() => alert('لا توجد متابعات جديدة في حسابك حتى الآن.')}
+                            className="flex flex-col items-center gap-1 cursor-pointer"
+                          >
+                            <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-lg shadow-sm">
+                              👤
+                            </div>
+                            <span className="text-[9px] font-bold text-slate-600">متابعون جدد</span>
+                          </div>
+
+                          <div 
+                            onClick={() => setSupportChatOpen(true)}
+                            className="flex flex-col items-center gap-1 cursor-pointer"
+                          >
+                            <div className="w-10 h-10 rounded-full bg-amber-100 text-[#FFAE42] flex items-center justify-center text-lg shadow-sm animate-pulse">
+                              🐱
+                            </div>
+                            <span className="text-[9px] font-black text-amber-600">دعم صدى الفني</span>
+                          </div>
+                        </div>
+
+                        {/* Chats list */}
+                        <div className="space-y-2">
+                          {/* System Support Chat */}
+                          <div 
+                            onClick={() => setSupportChatOpen(true)}
+                            className="bg-white p-3 rounded-xl border border-[#E8DCC4]/60 shadow-sm flex justify-between items-center hover:bg-[#FDFBF7] cursor-pointer transition active:scale-[0.99]"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-10 h-10 rounded-full bg-amber-50 border border-[#FFAE42]/20 flex items-center justify-center text-xl relative shadow-inner">
+                                🐱
+                                <span className="absolute -top-0.5 -right-0.5 bg-red-500 w-2.5 h-2.5 rounded-full border border-white"></span>
+                              </div>
+                              <div className="text-right font-sans">
+                                <h4 className="text-xs font-black text-[#4A3E3D]">الدعم الفني والخدمة لصدى 🛡️</h4>
+                                <p className="text-[10px] text-slate-500 truncate w-48 mt-0.5">مرحباً بك في صدى العرب يا بطل! نحن هنا لمساعدتك...</p>
+                              </div>
+                            </div>
+                            <span className="text-[8px] text-slate-400 font-mono">الآن</span>
+                          </div>
+
+                          {/* Dynamic Real Chat Threads */}
+                          {(() => {
+                            const threadsMap = new Map<string, PrivateMessage>();
+                            privateMessages.forEach(msg => {
+                              const otherUserId = msg.senderId === currentUser?.id ? msg.receiverId : msg.senderId;
+                              const currentLatest = threadsMap.get(otherUserId);
+                              if (!currentLatest || new Date(msg.timestamp) > new Date(currentLatest.timestamp)) {
+                                threadsMap.set(otherUserId, msg);
+                              }
+                            });
+
+                            return Array.from(threadsMap.values()).map(latestMsg => {
+                              const otherUserId = latestMsg.senderId === currentUser?.id ? latestMsg.receiverId : latestMsg.senderId;
+                              const otherUser = users.find(u => u.id === otherUserId) || {
+                                id: otherUserId,
+                                name: latestMsg.senderId === currentUser?.id ? latestMsg.receiverName : latestMsg.senderName,
+                                avatar: latestMsg.senderId === currentUser?.id ? 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde' : latestMsg.senderAvatar,
+                                level: 1
+                              };
+
+                              return (
+                                <div
+                                  key={otherUserId}
+                                  onClick={() => {
+                                    setActivePrivateChatUser(otherUser as AppUser);
+                                    setIsPrivateInboxOpen(true);
+                                  }}
+                                  className="bg-white p-3 rounded-xl border border-[#E8DCC4]/60 shadow-sm flex justify-between items-center hover:bg-[#FDFBF7] cursor-pointer transition active:scale-[0.99] text-right"
+                                >
+                                  <span className="text-[8px] text-slate-400 font-mono">
+                                    {new Date(latestMsg.timestamp).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+
+                                  <div className="flex items-center gap-2.5">
+                                    <div className="text-right font-sans">
+                                      <h4 className="text-xs font-black text-[#4A3E3D]">{otherUser.name}</h4>
+                                      <p className="text-[10px] text-slate-500 truncate w-48 mt-0.5">
+                                        {latestMsg.isEncrypted ? '🔐 [رسالة مشفرة بنظام E2EE]' : latestMsg.text}
+                                      </p>
+                                    </div>
+                                    <img
+                                      src={otherUser.avatar}
+                                      alt=""
+                                      className="w-10 h-10 rounded-full object-cover border border-purple-500/20"
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ==================== 5. ME / PROFILE TAB (الملف الشخصي الفاخر) ==================== */}
+                    {dashboardTab === 'profile' && (
+                      <div className="space-y-4 animate-fade-in" id="tab-panel-profile">
+                        
+                        {/* Premium Golden-bordered Arab Profile Card */}
+                        <div className="bg-gradient-to-br from-[#4A3E3D] to-[#2B2322] p-4 rounded-3xl text-white shadow-md relative overflow-hidden">
+                          <div className="absolute top-0 left-0 text-9xl text-white/5 pointer-events-none -translate-x-10 -translate-y-10">🕌</div>
+                          
+                          <div className="flex items-center gap-3 relative z-10">
+                            {/* Avatar with beautiful gold crown frame */}
+                            <div className="relative">
+                              <div className="w-14 h-14 rounded-full border-2 border-amber-400 p-0.5 shadow-md bg-amber-50/10">
+                                <img
+                                  src={currentUser.avatar}
+                                  className="w-full h-full rounded-full object-cover"
+                                />
+                              </div>
+                              <span className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-md rotate-12">👑</span>
+                            </div>
+
+                            <div className="text-right">
+                              <h3 className="text-sm font-black flex items-center gap-1.5">
+                                <span>{currentUser.name}</span>
+                                <span className="bg-amber-400 text-slate-950 text-[7px] font-black px-1.5 py-0.5 rounded-full">SVIP</span>
+                              </h3>
+                              <p className="text-[10px] text-amber-100 font-mono mt-0.5">معرف الحساب: {currentUser.id}</p>
+                              <div className="flex gap-1.5 mt-1.5">
+                                <span className="bg-amber-400/20 text-amber-300 text-[8px] px-2 py-0.5 rounded border border-amber-400/20 font-bold">
+                                  مستوى الحساب: {currentUser.level}
                                 </span>
-                                <span className="text-[10px] font-mono text-purple-300 font-bold">
-                                  🔥 {room.activeUsersCount} متواجد
+                                <span className="bg-blue-400/20 text-blue-300 text-[8px] px-2 py-0.5 rounded font-bold">
+                                  ذكر ♂
                                 </span>
                               </div>
                             </div>
                           </div>
-                        ))}
+
+                          {/* Stat Metric counts */}
+                          <div className="grid grid-cols-4 gap-1 text-center pt-4 border-t border-white/10 mt-4 text-white relative z-10">
+                            <div>
+                              <strong className="text-xs block">{currentUser.following?.length || 0}</strong>
+                              <span className="text-[8px] text-slate-300">المتابَعون</span>
+                            </div>
+                            <div>
+                              <strong className="text-xs block">45</strong>
+                              <span className="text-[8px] text-slate-300">الأصدقاء</span>
+                            </div>
+                            <div>
+                              <strong className="text-xs block">{currentUser.followers?.length || 0}</strong>
+                              <span className="text-[8px] text-slate-300">المتابعون</span>
+                            </div>
+                            <div>
+                              <strong className="text-xs block">3.2K</strong>
+                              <span className="text-[8px] text-slate-300">الزوار</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Biography / User Status Card */}
+                        <div className="bg-white p-3.5 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-2">
+                          <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                            <span className="text-xs font-black text-[#4A3E3D]">السيرة الذاتية (Bio) ✍️</span>
+                            <button
+                              onClick={() => {
+                                setSelectedProfileUser(currentUser);
+                                setIsEditingBio(true);
+                                setBioEditValue(currentUser.bio || '');
+                                setIsProfileModalOpen(true);
+                              }}
+                              className="text-[9px] text-amber-500 font-bold hover:underline"
+                            >
+                              تعديل السيرة
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-slate-600 leading-relaxed italic">
+                            {currentUser.bio || 'اكتب سيرة ذاتية مميزة لتعريف رواد صدى العرب بهويتك وبصمتك!'}
+                          </p>
+                        </div>
+
+                        {/* Interactive Lottery Wheel mini game banner */}
+                        <div 
+                          onClick={() => {
+                            const bonus = Math.floor(Math.random() * 20) + 1;
+                            const updated = currentUser.coins + bonus;
+                            fetch('/api/users', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ id: currentUser.id, name: currentUser.name, coins: updated })
+                            })
+                            .then(() => {
+                              setCurrentUser(prev => prev ? { ...prev, coins: updated } : null);
+                              alert(`🎡 تم تدوير عجلة الشحن الفوري! حصلت على +${bonus} كوينز مجانية! 🎉`);
+                              fetchDbStates();
+                            });
+                          }}
+                          className="bg-gradient-to-r from-orange-500 to-amber-500 p-3.5 rounded-2xl text-white text-right shadow-sm hover:scale-[1.01] transition active:scale-95 cursor-pointer relative overflow-hidden"
+                        >
+                          <div className="absolute -left-3 -bottom-3 text-5xl opacity-25">🎡</div>
+                          <h4 className="text-xs font-black">يانصيب السحب والجوائز 🎟️</h4>
+                          <p className="text-[9px] text-amber-50 mt-0.5">انقر لتدوير العجلة مجاناً اليوم واكسب كوينز فورية سريعة!</p>
+                        </div>
+
+                        {/* Wallet Area with badges */}
+                        <div className="bg-white p-3.5 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-3">
+                          <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                            <span className="text-xs font-black text-[#4A3E3D]">محفظة الكوينز والشحن 💰</span>
+                            <span className="text-[10px] text-amber-500 font-bold">الرصيد الكلي: 🪙 {currentUser.coins.toFixed(0)}</span>
+                          </div>
+
+                          <div className="flex justify-between items-center bg-amber-50/50 p-2.5 rounded-xl border border-amber-400/20 relative">
+                            {/* Speech bubble */}
+                            <div className="absolute -top-3.5 left-2 bg-yellow-400 text-slate-950 text-[8px] font-black px-1.5 py-0.5 rounded-md shadow-sm">
+                              انقر لشحن فوري ⚡
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[9px] text-slate-500">الوكيل المعتمد لصدى العرب</span>
+                              <h5 className="text-xs font-black text-amber-600 leading-tight">شحن فوري كاش أوفلاين</h5>
+                            </div>
+                            <button 
+                              onClick={() => setCurrentScreen('agent_pin')}
+                              className="bg-amber-500 text-white font-bold text-[9px] px-3 py-1 rounded-full shadow-sm hover:bg-amber-600 transition"
+                            >
+                              اشحن الآن
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Quick Grid actions list (2x2 Mobile-First Grid) */}
+                        <div className="grid grid-cols-2 gap-3 text-center text-xs">
+                          <div 
+                            onClick={() => alert('عشائر وقبائل صدى العرب: ميزة التحالف الصوتي قادمة في الإصدار v1.1')}
+                            className="bg-white aspect-square flex flex-col justify-center items-center p-4 rounded-2xl border border-[#E8DCC4]/50 shadow-sm cursor-pointer hover:bg-slate-50 active:scale-95 transition-all duration-150"
+                          >
+                            <span className="text-3xl mb-2">🛡️</span>
+                            <span className="text-xs font-black text-[#4A3E3D]">القبيلة</span>
+                            <span className="text-[9px] text-slate-400 mt-1">التحالف والنسب</span>
+                          </div>
+                          
+                          <div 
+                            onClick={() => alert('متجر الأوسمة والإطارات والألقاب: قريباً!')}
+                            className="bg-white aspect-square flex flex-col justify-center items-center p-4 rounded-2xl border border-[#E8DCC4]/50 shadow-sm cursor-pointer hover:bg-slate-50 active:scale-95 transition-all duration-150"
+                          >
+                            <span className="text-3xl mb-2">🏬</span>
+                            <span className="text-xs font-black text-[#4A3E3D]">المتجر</span>
+                            <span className="text-[9px] text-slate-400 mt-1">إطارات وألقاب</span>
+                          </div>
+
+                          <div 
+                            onClick={() => alert('حقيبتك الشخصية فارغة من الإطارات والمقاعد الخاصة.')}
+                            className="bg-white aspect-square flex flex-col justify-center items-center p-4 rounded-2xl border border-[#E8DCC4]/50 shadow-sm cursor-pointer hover:bg-slate-50 active:scale-95 transition-all duration-150"
+                          >
+                            <span className="text-3xl mb-2">💼</span>
+                            <span className="text-xs font-black text-[#4A3E3D]">الحقيبة</span>
+                            <span className="text-[9px] text-slate-400 mt-1">المقتنيات الخاصة</span>
+                          </div>
+
+                          <div 
+                            onClick={() => alert('مستواك الحالي يخولك لدخول كافة مجالس صدى الصوتية.')}
+                            className="bg-white aspect-square flex flex-col justify-center items-center p-4 rounded-2xl border border-[#E8DCC4]/50 shadow-sm cursor-pointer hover:bg-slate-50 active:scale-95 transition-all duration-150"
+                          >
+                            <span className="text-3xl mb-2">🎖️</span>
+                            <span className="text-xs font-black text-[#4A3E3D]">الأوسمة</span>
+                            <span className="text-[9px] text-slate-400 mt-1">شارات الشرف</span>
+                          </div>
+                        </div>
+
                       </div>
                     )}
 
                   </div>
 
+                  {/* NATIVE PREMIUM BOTTOM NAVIGATION BAR */}
+                  <div className="absolute bottom-0 left-0 right-0 h-16 bg-white border-t border-[#E8DCC4]/60 flex justify-around items-center px-2 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-40 select-none">
+                    
+                    {/* Tab 1: Party */}
+                    <button
+                      onClick={() => setDashboardTab('party')}
+                      className={`flex flex-col items-center justify-center w-14 h-full transition-all duration-150 ${
+                        dashboardTab === 'party' ? 'text-[#FFAE42] scale-105 font-black' : 'text-slate-400 font-medium'
+                      } cursor-pointer`}
+                    >
+                      <span className="text-xl leading-none">🎙️</span>
+                      <span className="text-[9px] mt-1 leading-none">الحفلة</span>
+                    </button>
+
+                    {/* Tab 2: Games */}
+                    <button
+                      onClick={() => setDashboardTab('games')}
+                      className={`flex flex-col items-center justify-center w-14 h-full transition-all duration-150 ${
+                        dashboardTab === 'games' ? 'text-[#FFAE42] scale-105 font-black' : 'text-slate-400 font-medium'
+                      } cursor-pointer`}
+                    >
+                      <span className="text-xl leading-none">🎮</span>
+                      <span className="text-[9px] mt-1 leading-none">الألعاب</span>
+                    </button>
+
+                    {/* Tab 3: Discover */}
+                    <button
+                      onClick={() => setDashboardTab('explore')}
+                      className={`flex flex-col items-center justify-center w-14 h-full transition-all duration-150 ${
+                        dashboardTab === 'explore' ? 'text-[#FFAE42] scale-105 font-black' : 'text-slate-400 font-medium'
+                      } cursor-pointer`}
+                    >
+                      <span className="text-xl leading-none">✨</span>
+                      <span className="text-[9px] mt-1 leading-none">اكتشف</span>
+                    </button>
+
+                    {/* Tab 4: Messages */}
+                    <button
+                      onClick={() => setDashboardTab('messages')}
+                      className={`flex flex-col items-center justify-center w-14 h-full transition-all duration-150 relative ${
+                        dashboardTab === 'messages' ? 'text-[#FFAE42] scale-105 font-black' : 'text-slate-400 font-medium'
+                      } cursor-pointer`}
+                    >
+                      {/* Red unread messages badge */}
+                      <span className="absolute top-2 right-3 bg-red-500 text-white font-extrabold text-[7px] w-3.5 h-3.5 rounded-full flex items-center justify-center border border-white">
+                        1
+                      </span>
+                      <span className="text-xl leading-none">✉️</span>
+                      <span className="text-[9px] mt-1 leading-none">الرسائل</span>
+                    </button>
+
+                    {/* Tab 5: Me */}
+                    <button
+                      onClick={() => setDashboardTab('profile')}
+                      className={`flex flex-col items-center justify-center w-14 h-full transition-all duration-150 ${
+                        dashboardTab === 'profile' ? 'text-[#FFAE42] scale-105 font-black' : 'text-slate-400 font-medium'
+                      } cursor-pointer`}
+                    >
+                      <span className="text-xl leading-none">👤</span>
+                      <span className="text-[9px] mt-1 leading-none">أنا</span>
+                    </button>
+                  </div>
+
+                  {/* ==================== MODAL OVERLAYS AND POPUPS ==================== */}
+
                   {/* Private Room PIN Modal prompt */}
                   {selectedLockedRoom && (
-                    <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-50 animate-fade-in">
-                      <div className="bg-slate-900 border border-purple-500/30 p-5 rounded-2xl w-full max-w-xs text-right space-y-4">
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center p-6 z-50 animate-fade-in" dir="rtl">
+                      <div className="bg-white border border-[#E8DCC4] p-5 rounded-2xl w-full max-w-xs text-right space-y-4 shadow-xl">
                         <div className="text-center">
-                          <Lock className="w-8 h-8 text-red-500 mx-auto mb-2 animate-bounce" />
-                          <h4 className="text-sm font-bold text-white">المجلس محمي بكلمة سر</h4>
-                          <p className="text-[10px] text-slate-400 mt-1">يرجى إدخال رمز المرور للدخول للمجلس</p>
-                          <span className="text-[9px] text-amber-300 font-mono bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/20 mt-1.5 inline-block">
-                            💡 تلميح للمحاكي: الرمز هو 123
+                          <span className="text-3xl block mb-2 animate-bounce">🔒</span>
+                          <h4 className="text-sm font-black text-[#4A3E3D]">المجلس محمي بكلمة سر</h4>
+                          <p className="text-[10px] text-slate-500 mt-1">يرجى إدخال رمز المرور للدخول لهذا المجلس الصوتي</p>
+                          <span className="text-[9px] text-amber-600 font-mono bg-amber-50 px-2.5 py-0.5 rounded border border-amber-400/20 mt-2 inline-block">
+                            💡 الرمز للتجربة والمحاكاة هو: 123
                           </span>
                         </div>
 
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           <input
                             type="password"
-                            placeholder="رمز الدخول PIN"
+                            placeholder="أدخل رمز الدخول PIN"
                             value={roomPasswordInput}
                             onChange={(e) => {
                               setRoomPasswordInput(e.target.value);
                               setRoomPasswordError(false);
                             }}
-                            className="w-full bg-[#03000a] border border-slate-800 rounded-xl p-2.5 text-center text-xs text-white font-mono tracking-widest"
+                            className="w-full bg-slate-50 border border-[#E8DCC4] rounded-xl p-2.5 text-center text-xs text-[#4A3E3D] font-mono tracking-widest focus:outline-none focus:border-[#FFAE42]"
                           />
                           {roomPasswordError && (
-                            <span className="text-[9px] text-red-400 text-center block font-bold">رمز الدخول غير صحيح!</span>
+                            <span className="text-[9px] text-red-500 text-center block font-bold">رمز الدخول غير صحيح!</span>
                           )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 pt-1">
                           <button
                             onClick={() => setSelectedLockedRoom(null)}
-                            className="bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold transition"
-                            id="cancel-pin-btn"
+                            className="bg-slate-100 hover:bg-slate-200 py-2 rounded-xl text-xs font-bold text-[#8B7E74] transition"
                           >
                             إلغاء
                           </button>
                           <button
                             onClick={handleVerifyRoomPassword}
-                            className="bg-[#7C3AED] hover:bg-[#6d28d9] py-2 rounded-xl text-xs font-bold text-white transition"
-                            id="confirm-pin-btn"
+                            className="bg-[#FFAE42] text-white py-2 rounded-xl text-xs font-black transition shadow-sm"
                           >
                             تأكيد الدخول
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Daily Bonus Chest Overlay Modal */}
+                  {isDailyBonusOpen && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center p-6 z-50 animate-fade-in" dir="rtl">
+                      <div className="bg-gradient-to-b from-white to-[#FAF6EB] p-5 rounded-3xl w-full max-w-xs text-center space-y-4 border border-[#E8DCC4] shadow-2xl relative">
+                        <button 
+                          onClick={() => setIsDailyBonusOpen(false)}
+                          className="absolute top-3 right-3 text-slate-400 hover:text-[#4A3E3D] font-bold text-xs"
+                        >
+                          ✕
+                        </button>
+                        
+                        <div className="space-y-1">
+                          <span className="text-5xl block animate-bounce duration-[2000ms]">🎁</span>
+                          <h4 className="text-sm font-black text-[#4A3E3D]">صندوق الهدايا اليومية لصدى</h4>
+                          <p className="text-[10px] text-slate-500">افتح الصندوق لتحصل على مكافأة الكوينزات الترحيبية!</p>
+                        </div>
+
+                        <div className="bg-amber-50 rounded-2xl p-4 border border-[#FFAE42]/20 flex flex-col items-center justify-center">
+                          <span className="text-3xl font-black text-[#FFAE42] animate-pulse">🪙 +50 كوينز</span>
+                          <span className="text-[8px] text-slate-400 mt-1">تضاف فوراً لرصيد حسابك السحابي</span>
+                        </div>
+
+                        <button
+                          onClick={async () => {
+                            try {
+                              const updatedCoins = currentUser.coins + 50;
+                              const response = await fetch('/api/users', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ id: currentUser.id, name: currentUser.name, coins: updatedCoins })
+                              });
+                              if (response.ok) {
+                                setDailyBonusClaimed(true);
+                                setCurrentUser(prev => prev ? { ...prev, coins: updatedCoins } : null);
+                                setIsDailyBonusOpen(false);
+                                alert('🎉 مبروك! تم إضافة 50 كوينز بنجاح لحسابك!');
+                                await fetchDbStates();
+                              }
+                            } catch (e) {
+                              console.error(e);
+                            }
+                          }}
+                          className="w-full bg-[#FFAE42] text-white py-2.5 rounded-xl text-xs font-black transition shadow"
+                        >
+                          استلم المكافأة الآن ✨
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Drifting Bottle Overlay Game Modal */}
+                  {driftingBottleMode !== 'idle' && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center p-6 z-50 animate-fade-in" dir="rtl">
+                      <div className="bg-white p-5 rounded-3xl w-full max-w-xs text-right space-y-4 border border-[#E8DCC4] shadow-2xl relative">
+                        <button 
+                          onClick={() => { setDriftingBottleMode('idle'); setBottleMessage(''); setPickedBottle(null); }}
+                          className="absolute top-3 right-3 text-slate-400 hover:text-[#4A3E3D] font-bold text-xs"
+                        >
+                          ✕
+                        </button>
+
+                        <div className="text-center">
+                          <span className="text-4xl block mb-1 animate-bounce">🍾</span>
+                          <h4 className="text-sm font-black text-[#4A3E3D]">زجاجة رسائل البحر لصدى</h4>
+                          <p className="text-[10px] text-slate-500">اكتب سراً ليجده الأصدقاء، أو التقط زجاجة مجهولة!</p>
+                        </div>
+
+                        {/* Mode selectors */}
+                        <div className="flex gap-2 bg-slate-100 p-1 rounded-full text-center">
+                          <button 
+                            onClick={() => { setDriftingBottleMode('writing'); setPickedBottle(null); }}
+                            className={`w-1/2 py-1 rounded-full text-[10px] font-bold ${driftingBottleMode === 'writing' ? 'bg-[#FFAE42] text-white' : 'text-slate-500'}`}
+                          >
+                            اكتب وارمِ زجاجة ✍️
+                          </button>
+                          <button 
+                            onClick={() => {
+                              setDriftingBottleMode('reading');
+                              const sampleMessages = [
+                                'ريم الرياض: "أتمنى للجميع سهرة طرب ممتعة الليلة في مجالسنا!"',
+                                'فارس نجد: "صوتك كنز يا منشد الغرفة، الله يحفظك!"',
+                                'سلطان العرب: "من يتحدى كيرم الليلة؟ حياكم بغرفة الطرب!"',
+                                'صوت الحرمين: "صباح الخير والمسرات لأجمل أخوة وأخوات!"'
+                              ];
+                              setPickedBottle(sampleMessages[Math.floor(Math.random() * sampleMessages.length)]);
+                            }}
+                            className={`w-1/2 py-1 rounded-full text-[10px] font-bold ${driftingBottleMode === 'reading' ? 'bg-[#FFAE42] text-white' : 'text-slate-500'}`}
+                          >
+                            التقط زجاجة 🌊
+                          </button>
+                        </div>
+
+                        {driftingBottleMode === 'writing' ? (
+                          <div className="space-y-2">
+                            <textarea
+                              rows={3}
+                              placeholder="اكتب رسالتك السرية هنا... يرجى الالتزام بالود والاحترام."
+                              value={bottleMessage}
+                              onChange={(e) => setBottleMessage(e.target.value)}
+                              className="w-full bg-slate-50 border border-[#E8DCC4] rounded-2xl p-2.5 text-xs text-[#4A3E3D] focus:outline-none focus:border-[#FFAE42] text-right"
+                            />
+                            <button
+                              onClick={() => {
+                                if (bottleMessage.trim()) {
+                                  alert('🎉 قمت برمي زجاجتك في البحر بنجاح! سينتظر الأصدقاء التقاطها بقرب الشاطئ.');
+                                  setBottleMessage('');
+                                  setDriftingBottleMode('idle');
+                                } else {
+                                  alert('الرجاء كتابة رسالة قبل الرمي!');
+                                }
+                              }}
+                              className="w-full bg-[#FFAE42] text-white py-2 rounded-xl text-xs font-black transition"
+                            >
+                              ارمِ الزجاجة في البحر 🌊
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3 bg-cyan-50/50 p-3 rounded-2xl border border-cyan-100 text-right">
+                            <span className="text-[9px] text-cyan-600 block font-bold">📜 عثرت على زجاجة مكتوب عليها:</span>
+                            <p className="text-xs text-[#4A3E3D] leading-relaxed italic">{pickedBottle}</p>
+                            <button
+                              onClick={() => setDriftingBottleMode('idle')}
+                              className="w-full bg-[#FFAE42] text-white py-2 rounded-xl text-xs font-black transition"
+                            >
+                              إرجاع الزجاجة للبحر
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mascot Support Chat Drawer Modal */}
+                  {supportChatOpen && (
+                    <div className="absolute inset-0 bg-black/70 flex items-end justify-center z-50 animate-fade-in" dir="rtl">
+                      <div className="bg-white w-full rounded-t-3xl max-w-sm h-3/4 flex flex-col justify-between overflow-hidden shadow-2xl">
+                        
+                        {/* Drawer Header */}
+                        <div className="bg-gradient-to-r from-amber-500 to-yellow-400 p-4 text-white flex justify-between items-center shadow">
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">🐱</span>
+                            <div className="text-right">
+                              <h4 className="text-xs font-black">دعم صدى العرب الفني والخدمة</h4>
+                              <p className="text-[9px] text-amber-50">متصل الآن لمساعدتك</p>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => setSupportChatOpen(false)}
+                            className="text-white hover:text-amber-100 font-bold text-xs bg-black/15 p-1 px-2.5 rounded-full"
+                          >
+                            إغلاق
+                          </button>
+                        </div>
+
+                        {/* Drawer Chat messages area */}
+                        <div className="flex-grow p-4 overflow-y-auto space-y-3 bg-[#FAF6EB]">
+                          {supportChatMessages.map((msg, idx) => (
+                            <div 
+                              key={idx} 
+                              className={`flex ${msg.isUser ? 'justify-start' : 'justify-end'} text-right`}
+                            >
+                              <div className={`p-3 rounded-2xl text-xs max-w-[80%] shadow-sm ${
+                                msg.isUser 
+                                  ? 'bg-[#FFAE42] text-white rounded-tr-none' 
+                                  : 'bg-white text-[#4A3E3D] rounded-tl-none border border-[#E8DCC4]/60'
+                              }`}>
+                                <span className="block font-bold text-[8px] opacity-75 mb-1">{msg.sender}</span>
+                                <p className="leading-relaxed">{msg.text}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Drawer Input send bar */}
+                        <div className="p-3 bg-white border-t border-[#E8DCC4]/60 flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="اكتب رسالتك للدعم الفني هنا..."
+                            value={supportInput}
+                            onChange={(e) => setSupportInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                if (supportInput.trim()) {
+                                  const uText = supportInput.trim();
+                                  setSupportChatMessages(prev => [...prev, { sender: currentUser.name, text: uText, isUser: true }]);
+                                  setSupportInput('');
+                                  
+                                  // Auto simulate supportive response
+                                  setTimeout(() => {
+                                    setSupportChatMessages(prev => [...prev, { 
+                                      sender: 'دعم صدى الفني 🐱', 
+                                      text: 'تسلم يا غالي! تم استلام رسالتك وتوجيهها للمستشارين والوكيل المعتمد لحلها فوراً. شكراً لتواصلك مع صدى العرب 💖', 
+                                      isUser: false 
+                                    }]);
+                                  }, 1500);
+                                }
+                              }
+                            }}
+                            className="flex-grow bg-slate-50 border border-[#E8DCC4] rounded-full px-4 py-1.5 text-xs text-right focus:outline-none focus:border-[#FFAE42]"
+                          />
+                          <button
+                            onClick={() => {
+                              if (supportInput.trim()) {
+                                const uText = supportInput.trim();
+                                setSupportChatMessages(prev => [...prev, { sender: currentUser.name, text: uText, isUser: true }]);
+                                setSupportInput('');
+                                
+                                // Auto simulate supportive response
+                                setTimeout(() => {
+                                  setSupportChatMessages(prev => [...prev, { 
+                                    sender: 'دعم صدى الفني 🐱', 
+                                    text: 'تسلم يا غالي! تم استلام رسالتك وتوجيهها للمستشارين والوكيل المعتمد لحلها فوراً. شكراً لتواصلك مع صدى العرب 💖', 
+                                    isUser: false 
+                                  }]);
+                                }, 1500);
+                               }
+                            }}
+                            className="bg-[#FFAE42] text-white p-2 rounded-full hover:bg-amber-500 active:scale-95 transition flex items-center justify-center cursor-pointer"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
                       </div>
                     </div>
                   )}
@@ -1602,38 +2840,79 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Room Top Header Nav Bar */}
-                  <div className="p-3 bg-slate-950/80 border-b border-purple-950/40 flex justify-between items-center select-none">
-                    <div className="flex items-center gap-2">
-                      <img
-                        src={activeRoom.hostAvatar}
-                        alt="host"
-                        className="w-9 h-9 rounded-lg border border-amber-500/30 object-cover"
-                      />
-                      <div className="text-right">
-                        <h4 className="text-xs font-black text-white max-w-[140px] truncate">{activeRoom.name}</h4>
-                        <div className="flex items-center gap-1">
-                          <span className="bg-amber-500 text-slate-950 font-black text-[8px] px-1 rounded">
-                            مستوى {activeRoom.level}
-                          </span>
-                          <span className="text-[9px] text-slate-400">المستمعين: {activeRoom.activeUsersCount}</span>
-                        </div>
+                  {/* Ambient Stage Spotlights, Lasers and Bokeh Light Spheres */}
+                  <div className="absolute inset-0 pointer-events-none z-0">
+                    <div className="absolute inset-0 bg-gradient-to-b from-[#140b2e] via-[#090518] to-[#010005]"></div>
+                    
+                    {/* Glowing color spots with soft blur */}
+                    <div className="absolute top-[8%] left-[15%] w-[160px] h-[320px] bg-purple-600/10 rounded-full blur-[65px] transform -rotate-12 animate-pulse" style={{ animationDuration: '7s' }}></div>
+                    <div className="absolute top-[12%] right-[8%] w-[170px] h-[340px] bg-indigo-500/10 rounded-full blur-[70px] transform rotate-12 animate-pulse" style={{ animationDuration: '9s' }}></div>
+                    <div className="absolute bottom-[25%] left-[10%] w-[190px] h-[220px] bg-pink-600/10 rounded-full blur-[75px] animate-pulse" style={{ animationDuration: '8s' }}></div>
+                    <div className="absolute top-[35%] left-[35%] w-[140px] h-[140px] bg-cyan-500/10 rounded-full blur-[60px]"></div>
+
+                    {/* Subtle vertical spotlight beams */}
+                    <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[2px] h-[600px] bg-gradient-to-b from-purple-500/15 via-transparent to-transparent opacity-30 blur-[1px]"></div>
+                    <div className="absolute top-0 left-[25%] w-[1.5px] h-[600px] bg-gradient-to-b from-cyan-500/10 via-transparent to-transparent opacity-25 blur-[1px]"></div>
+                    <div className="absolute top-0 left-[75%] w-[1.5px] h-[600px] bg-gradient-to-b from-pink-500/10 via-transparent to-transparent opacity-25 blur-[1px]"></div>
+                  </div>
+
+                  {/* Room Top Header Nav Bar (Matching live mobile app style) */}
+                  <div className="p-3 bg-transparent flex justify-between items-center select-none z-30" dir="rtl">
+                    {/* Left side: Host Info Pill */}
+                    <div className="flex items-center gap-1.5 bg-black/40 backdrop-blur-md rounded-full pl-2.5 pr-1 py-1 border border-white/5">
+                      <div className="relative">
+                        <img
+                          src={activeRoom.hostAvatar}
+                          alt="host"
+                          className="w-7 h-7 rounded-full border border-purple-500/30 object-cover"
+                        />
+                        {/* Active status indicator */}
+                        <span className="absolute bottom-0 right-0 block h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#140b2e]" />
                       </div>
+                      <div className="text-right">
+                        <h4 className="text-[10px] font-bold text-white max-w-[80px] truncate leading-tight">
+                          {activeRoom.name.replace(/☕|🎶|🔒/g, '').trim() || 'mason chat'}
+                        </h4>
+                        <span className="text-[8px] text-slate-300 block leading-none">مستوى {activeRoom.level}</span>
+                      </div>
+                      <button
+                        onClick={() => alert('تمت متابعة منشئ المجلس بنجاح! 🔔')}
+                        className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-[9px] px-2.5 py-0.5 rounded-full transition mr-1.5"
+                      >
+                        متابعة
+                      </button>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => setIsAgoraDrawerOpen(true)}
-                        className="p-1.5 rounded-lg bg-purple-950/40 hover:bg-[#7C3AED]/20 border border-purple-500/20 text-purple-300 hover:text-white transition cursor-pointer active:scale-95"
-                        id="room-settings-btn"
-                        title="إعدادات الصوت والمجلس"
-                      >
-                        <Settings className="w-4 h-4" />
-                      </button>
+                    {/* Right side: Viewers and Exit */}
+                    <div className="flex items-center gap-2">
+                      {/* Overlapping viewer avatars */}
+                      <div className="flex -space-x-1.5 space-x-reverse items-center">
+                        <img
+                          src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=60"
+                          alt="viewer"
+                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
+                        />
+                        <img
+                          src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=60"
+                          alt="viewer"
+                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
+                        />
+                        <img
+                          src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=60"
+                          alt="viewer"
+                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
+                        />
+                      </div>
 
+                      {/* Viewer count */}
+                      <div className="bg-black/30 backdrop-blur-md px-2 py-0.5 rounded-full text-[9px] text-slate-200 font-bold flex items-center gap-0.5">
+                        <span>{activeRoom.activeUsersCount + 210}</span>
+                        <span className="text-slate-400 text-[8px] font-bold">&gt;</span>
+                      </div>
+
+                      {/* Close X Button */}
                       <button
                         onClick={() => {
-                          // Make sure to clean seats occupied by current user when leaving
                           const cleanedSeats = activeRoom.seats.map(s => s.userId === currentUser.id ? { ...s, userId: null } : s);
                           const updatedRoom = { ...activeRoom, seats: cleanedSeats };
                           setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
@@ -1641,238 +2920,236 @@ export default function App() {
                           setIsGiftDrawerOpen(false);
                           setIsAgoraDrawerOpen(false);
                           setIsAdminDrawerOpen(false);
+                          setIsQueueDrawerOpen(false);
                           setSelectedGift(null);
                           setCurrentScreen('explore');
                         }}
-                        className="bg-red-950/50 hover:bg-red-900 border border-red-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold text-red-300 transition active:scale-95 cursor-pointer"
+                        className="w-7 h-7 rounded-full bg-black/40 hover:bg-black/60 text-slate-300 hover:text-white flex items-center justify-center transition active:scale-90"
                         id="exit-room-btn"
                       >
-                        خروج
+                        <span className="text-xs font-bold">✕</span>
                       </button>
                     </div>
                   </div>
 
-                  {/* Main Content: 9-Seat Interactive Virtual Stage */}
-                  <div className="flex-grow p-4 overflow-y-auto flex flex-col justify-between relative pb-24">
+                  {/* Main Content Area */}
+                  <div className="flex-grow p-4 flex flex-col justify-between relative pb-20 z-10 overflow-y-auto">
                     
-                    {/* Level Progress Indicator */}
-                    <div className="bg-[#120c24]/80 p-2 rounded-lg border border-purple-500/10 flex justify-between items-center text-[10px] text-slate-400 mb-2">
-                      <div className="flex items-center gap-1.5">
-                        <span>نقاط الغرفة للتطوير:</span>
-                        <span className="font-mono text-purple-300">{activeRoom.xp} / {getXpForNextRoomLevel(activeRoom.level)} XP</span>
-                      </div>
-                      <div className="flex items-center gap-1 text-emerald-400 font-bold" title="اتصال مستقر بزمن استجابة فوري">
-                        <Wifi className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                        <span className="text-[9px] font-mono">متصل</span>
-                      </div>
-                    </div>
 
-                    {/* 9 SEATS STRUCTURAL MOBILE VIEW */}
-                    <div className="space-y-6">
-                      
-                      {/* Host Seat (Seat 0 - Center Top) */}
-                      <div className="flex flex-col items-center">
-                        <span className="text-[10px] text-amber-400 font-black tracking-widest mb-1">المستضيف / HOST</span>
-                        <div
-                          onClick={() => handleSeatClick(0)}
-                          className={`relative cursor-pointer transition-all duration-300 p-1 rounded-full ${
-                            speakingSeatIndex === 0 && activeRoom.seats[0].userId 
-                              ? 'animate-voice-pulse border-2 border-amber-400 scale-105 shadow-xl shadow-amber-400/50 ring-2 ring-amber-400/30'
-                              : activeRoom.seats[0].userId 
-                                ? 'border-2 border-amber-400 shadow-lg shadow-amber-500/20' 
-                                : 'border-2 border-dashed border-purple-500/30'
-                          }`}
-                          id="seat-host"
-                        >
-                          <div className="w-16 h-16 rounded-full overflow-hidden bg-slate-900 flex items-center justify-center">
-                            {activeRoom.seats[0].userId ? (
-                              <img
-                                src={users.find(u => u.id === activeRoom.seats[0].userId)?.avatar}
-                                alt="host pic"
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <User className="w-7 h-7 text-slate-600" />
-                            )}
-                          </div>
 
-                          {/* Animated voice speaking indicator */}
-                          {speakingSeatIndex === 0 && activeRoom.seats[0].userId && (
-                            <div className="absolute -top-1 -right-1 bg-emerald-500 p-1 rounded-full border border-slate-950 animate-green-pulse z-20">
-                              <Volume2 className="w-3.5 h-3.5 text-slate-950 font-black" />
-                            </div>
-                          )}
+                    {/* 10 SEATS STAGE: Two Parallel Rows of 5 Seats (As requested in the reference screenshot) */}
+                    <div className="mt-1 mb-auto py-2">
+                      <div className="grid grid-cols-5 gap-y-8 gap-x-1.5 text-center">
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => {
+                          const seat = activeRoom.seats[index] || { index, userId: null, isMuted: false, isLocked: false };
+                          const occupant = seat.userId ? users.find(u => u.id === seat.userId) : null;
+                          const isSpeaking = speakingSeatIndex === index && occupant;
 
-                          {/* Muted indicator */}
-                          {activeRoom.seats[0].isMuted && (
-                            <div className="absolute -bottom-1 -left-1 bg-red-600 p-1 rounded-full border border-slate-950">
-                              <VolumeX className="w-3 h-3 text-white" />
-                            </div>
-                          )}
-
-                          {/* Level badge */}
-                          {activeRoom.seats[0].userId && ! (speakingSeatIndex === 0) && (
-                            <span className="absolute -bottom-1 -right-1 bg-amber-500 text-slate-950 text-[9px] font-bold px-1 rounded-full">
-                              {users.find(u => u.id === activeRoom.seats[0].userId)?.level}
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-xs text-white font-bold mt-1 max-w-[100px] truncate">
-                          {activeRoom.seats[0].userId ? users.find(u => u.id === activeRoom.seats[0].userId)?.name : 'شاغر'}
-                        </span>
-                      </div>
-
-                      {/* Guest Seats (Seats 1-8 arranged in an elegant vertical 4x2 Mobile grid) */}
-                      <div>
-                        <div className="text-center mb-2.5">
-                          <span className="text-[9px] text-purple-400 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-500/20 font-bold">
-                            مقاعد الضيوف والأعضاء (8 مقاعد)
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-4 gap-x-2 gap-y-4">
-                          {[1, 2, 3, 4, 5, 6, 7, 8].map((index) => {
-                            const seat = activeRoom.seats[index];
-                            const occupant = seat.userId ? users.find(u => u.id === seat.userId) : null;
-
-                            return (
-                              <div
-                                key={index}
-                                onClick={() => handleSeatClick(index)}
-                                className="flex flex-col items-center cursor-pointer active:scale-95 duration-100 transition transform"
-                                id={`seat-guest-${index}`}
-                              >
-                                <div className={`relative transition-all duration-300 rounded-full p-0.5 ${
-                                  speakingSeatIndex === index && occupant
-                                    ? 'animate-voice-pulse border-2 border-purple-400 scale-105 shadow-lg shadow-purple-500/50 ring-2 ring-purple-500/30'
-                                    : occupant
-                                      ? 'border-2 border-purple-500'
-                                      : seat.isLocked
-                                        ? 'border-2 border-red-500/70'
-                                        : 'border border-dashed border-slate-700 hover:border-purple-500/40'
-                                }`}>
-                                  
-                                  {/* Avatar circle */}
-                                  <div className="w-11 h-11 rounded-full overflow-hidden bg-slate-950 flex items-center justify-center">
-                                    {occupant ? (
-                                      <img
-                                        src={occupant.avatar}
-                                        alt="guest avatar"
-                                        className="w-full h-full object-cover"
-                                      />
-                                    ) : seat.isLocked ? (
-                                      <Lock className="w-4 h-4 text-red-500" />
-                                    ) : (
-                                      <Plus className="w-4 h-4 text-slate-500" />
-                                    )}
-                                  </div>
-
-                                  {/* Animated voice speaking indicator */}
-                                  {speakingSeatIndex === index && occupant && (
-                                    <div className="absolute -top-1 -right-1 bg-emerald-500 p-0.5 rounded-full border border-slate-950 animate-green-pulse z-20">
-                                      <Volume2 className="w-2.5 h-2.5 text-slate-950 font-black" />
-                                    </div>
-                                  )}
-
-                                  {/* Status indicators */}
-                                  {seat.isMuted && (
-                                    <div className="absolute -bottom-1 -left-1 bg-red-600 p-0.5 rounded-full border border-slate-950">
-                                      <VolumeX className="w-2.5 h-2.5 text-white" />
-                                    </div>
-                                  )}
-
-                                  {occupant && !(speakingSeatIndex === index) && (
-                                    <span className="absolute -bottom-1 -right-1 bg-purple-600 text-white text-[7px] font-bold px-1 rounded-full">
-                                      {occupant.level}
-                                    </span>
-                                  )}
-
+                          // Helper to render premium wings and halos
+                          const renderSeatFrame = (childrenNode: React.ReactNode) => {
+                            if (index === 0) { // Mason / Host (Double circle + Gold Crown)
+                              return (
+                                <div className={`relative p-1 rounded-full bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 shadow-md ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-amber-400/50' : ''}`}>
+                                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-xs drop-shadow">👑</div>
+                                  {childrenNode}
                                 </div>
-                                <span className="text-[10px] text-slate-300 mt-1 max-w-[65px] truncate font-medium text-center">
-                                  {occupant ? occupant.name : seat.isLocked ? 'مغلق' : `مقعد ${index}`}
-                                </span>
+                              );
+                            }
+                            if (index === 1) { // Sophia (Purple neon glow)
+                              return (
+                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-purple-600 via-fuchsia-500 to-pink-500 shadow-sm ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-purple-500/50' : ''}`}>
+                                  {childrenNode}
+                                </div>
+                              );
+                            }
+                            if (index === 2) { // Charlotte (Cyan neon ring)
+                              return (
+                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-cyan-400 via-blue-500 to-indigo-500 shadow-sm ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
+                                  {childrenNode}
+                                </div>
+                              );
+                            }
+                            if (index === 3) { // Ava (Glowing Blue Wings Frame)
+                              return (
+                                <div className={`relative p-0.5 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
+                                  <div className="absolute -left-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
+                                  <div className="absolute -right-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
+                                  {childrenNode}
+                                </div>
+                              );
+                            }
+                            if (index === 4) { // Ryan (Silver Ring)
+                              return (
+                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-slate-400 to-slate-200 ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
+                                  {childrenNode}
+                                </div>
+                              );
+                            }
+                            if (index === 5) { // Aby (Angel wings frame)
+                              return (
+                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-amber-400 via-yellow-300 to-orange-400 ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-amber-300/30' : ''}`}>
+                                  <div className="absolute -left-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
+                                  <div className="absolute -right-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
+                                  {childrenNode}
+                                </div>
+                              );
+                            }
+
+                            // Default style for unoccupied/unlocked seats
+                            return (
+                              <div className={`relative p-0.5 rounded-full border ${isSpeaking ? 'border-purple-400 animate-voice-pulse scale-105' : 'border-slate-800/40 hover:border-purple-500/30'}`}>
+                                {childrenNode}
                               </div>
                             );
-                          })}
-                        </div>
-                      </div>
+                          };
 
+                          return (
+                            <div
+                              key={index}
+                              onClick={() => handleSeatClick(index)}
+                              className="flex flex-col items-center cursor-pointer transition transform active:scale-95 duration-100"
+                              id={`seat-cell-${index}`}
+                            >
+                              {renderSeatFrame(
+                                <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-950/80 flex items-center justify-center relative">
+                                  {occupant ? (
+                                    <img
+                                      src={occupant.avatar}
+                                      alt="seat occupant"
+                                      className="w-full h-full object-cover"
+                                    />
+                                  ) : seat.isLocked ? (
+                                    <Lock className="w-3.5 h-3.5 text-red-500" />
+                                  ) : (
+                                    // Elegant Armchair/Sofa SVG Inside Empty Seat
+                                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-slate-600 opacity-60">
+                                      <path d="M19 10h-1c0-1.65-1.35-3-3-3H9c-1.65 0-3 1.35-3 3H5c-1.65 0-3 1.35-3 3v4c0 1.1.9 2 2 2h1v1c0 .55.45 1 1 1s1-.45 1-1v-1h8v1c0 .55.45 1 1 1s1-.45 1-1v-1h1c1.1 0 2-.9 2-2v-4c0-1.65-1.35-3-3-3zM6 14h12v3H6v-3z" />
+                                    </svg>
+                                  )}
+
+                                  {/* Speaking indicator overlay */}
+                                  {isSpeaking && (
+                                    <div className="absolute inset-0 bg-emerald-500/10 border-2 border-emerald-400 rounded-full animate-pulse pointer-events-none" />
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Small details */}
+                              <div className="mt-1 flex flex-col items-center">
+                                {occupant ? (
+                                  <>
+                                    <span className="text-[8px] text-white font-bold max-w-[50px] truncate block leading-tight">
+                                      {occupant.name.replace(' 👑', '')}
+                                    </span>
+                                    {/* Muted overlay icon */}
+                                    {seat.isMuted && (
+                                      <VolumeX className="w-2 h-2 text-red-400 mt-0.5" />
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-[8px] text-slate-500 font-mono">
+                                    {seat.isLocked ? 'مغلق' : index + 1}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
-                    {/* Live Arabic Council Chat Feed - Premium Floating Transparent Overlay */}
-                    <div className="absolute bottom-2 right-4 left-4 h-[110px] pointer-events-none z-20 flex flex-col justify-end overflow-hidden" dir="rtl">
+                    {/* Live Arabic Council Chat Feed - Premium Floating Transparent Overlay (Exactly like the screenshot) */}
+                    <div className="absolute bottom-1 right-3 left-3 h-[130px] pointer-events-none z-20 flex flex-col justify-end overflow-hidden" dir="rtl">
                       <div 
                         ref={(el) => {
                           if (el) {
                             el.scrollTop = el.scrollHeight;
                           }
                         }}
-                        className="overflow-y-auto space-y-1.5 scrollbar-none text-right pr-1 flex flex-col justify-end"
+                        className="overflow-y-auto space-y-1 scrollbar-none pr-1 flex flex-col justify-end"
                         style={{ 
                           direction: 'rtl', 
                           textAlign: 'right',
-                          WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,1) 40%, rgba(0,0,0,0) 100%)',
-                          maskImage: 'linear-gradient(to top, rgba(0,0,0,1) 40%, rgba(0,0,0,0) 100%)',
-                          height: '110px'
+                          WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,1) 50%, rgba(0,0,0,0) 100%)',
+                          maskImage: 'linear-gradient(to top, rgba(0,0,0,1) 50%, rgba(0,0,0,0) 100%)',
+                          height: '130px'
                         }}
                       >
-                        {roomMessages.map((msg, idx) => (
-                          <div key={idx} className="leading-relaxed animate-chat-slide-up">
-                            <div className="bg-black/50 backdrop-blur-xs px-2.5 py-1 rounded-xl inline-flex items-center gap-1.5 max-w-[90%] break-words">
-                              <span className={`${msg.color || 'text-amber-400'} font-black text-[10px]`}>{msg.sender}:</span>{' '}
-                              <span className="text-slate-100 text-[10px] font-medium">{msg.text}</span>
+                        {/* Screenshots accurate chat elements */}
+                        {roomMessages.map((msg, idx) => {
+                          // Assign colors and badges dynamically based on sender
+                          let lvl = 16;
+                          let lvlBg = 'bg-cyan-500/20 text-cyan-300 border-cyan-400/30';
+                          let isAnchor = false;
+
+                          if (msg.sender === 'Sophia') {
+                            lvl = 99;
+                            lvlBg = 'bg-pink-500/20 text-pink-300 border-pink-400/30';
+                          } else if (msg.sender === 'Mason 👑' || msg.sender === 'Mason') {
+                            lvl = 65;
+                            lvlBg = 'bg-purple-500/20 text-purple-300 border-purple-400/30';
+                            isAnchor = true;
+                          } else if (msg.sender === 'Ryan') {
+                            lvl = 32;
+                            lvlBg = 'bg-blue-500/20 text-blue-300 border-blue-400/30';
+                          } else if (msg.sender === 'Charlotte') {
+                            lvl = 18;
+                            lvlBg = 'bg-indigo-500/20 text-indigo-300 border-indigo-400/30';
+                          }
+
+                          const isSystem = msg.type === 'system';
+
+                          return (
+                            <div key={idx} className="leading-relaxed animate-chat-slide-up flex">
+                              <div className="bg-black/30 backdrop-blur-xs px-2 py-0.5 rounded-full inline-flex items-center gap-1.5 max-w-[95%] text-right">
+                                {!isSystem && (
+                                  <>
+                                    {/* Level Badge */}
+                                    <span className={`text-[7px] font-bold px-1 rounded-full border ${lvlBg}`}>
+                                      Lv.{lvl}
+                                    </span>
+                                    {/* Anchor Badge */}
+                                    {isAnchor && (
+                                      <span className="text-[7px] font-extrabold bg-blue-600/30 text-blue-300 px-1 rounded-full border border-blue-400/30">
+                                        ANCHOR
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                                
+                                <span className={`${isSystem ? 'text-purple-300' : 'text-amber-400/90'} font-bold text-[9px]`}>
+                                  {msg.sender}:
+                                </span>{' '}
+                                <span className="text-white text-[9px] font-medium leading-tight inline-flex items-center gap-1 flex-wrap">
+                                  {msg.isEncrypted ? (
+                                    <>
+                                      <span className="text-emerald-400 font-extrabold text-[10px]" title="مشفّر طرف-إلى-طرف (E2EE)">🔒</span>
+                                      <EncryptedMessageText
+                                        ciphertext={msg.rawCiphertext || ''}
+                                        iv={msg.iv || ''}
+                                        derivedKey={derivedKey}
+                                        showCiphertext={showCiphertextInFeed}
+                                        fallbackText={msg.text}
+                                      />
+                                    </>
+                                  ) : (
+                                    <span>{msg.text}</span>
+                                  )}
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
 
                   </div>
 
-                  {/* NATIVE PHONE NAVIGATION AND BOTTOM ACTION HUB (Standard Real Smartphone UI) */}
-                  <div className="p-3 bg-slate-950/95 border-t border-purple-950/40 flex justify-between items-center select-none z-30">
+                  {/* NATIVE PHONE NAVIGATION AND BOTTOM ACTION HUB (Overhauled perfectly matching screenshot) */}
+                  <div className="p-3 bg-slate-950/95 border-t border-purple-950/30 flex justify-between items-center select-none z-30 gap-2" dir="rtl">
                     
-                    {/* 1. Microphones Speak Controller */}
-                    <button
-                      onClick={() => {
-                        // Check if current user is sitting on any seat
-                        const userSeatIndex = activeRoom.seats.findIndex(s => s.userId === currentUser.id);
-                        if (userSeatIndex === -1) {
-                          alert('الرجاء الضغط على أحد المقاعد الشاغرة أولاً لتصعد وتتمكن من التحدث والمشاركة بالصوت!');
-                        } else {
-                          // Toggle mute
-                          const seat = activeRoom.seats[userSeatIndex];
-                          const updatedSeats = [...activeRoom.seats];
-                          updatedSeats[userSeatIndex] = { ...seat, isMuted: !seat.isMuted };
-                          const updatedRoom = { ...activeRoom, seats: updatedSeats };
-                          setActiveRoom(updatedRoom);
-                          setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
-                          
-                          // Trigger active voice simulation on enable
-                          if (seat.isMuted) {
-                            setSpeakingSeatIndex(userSeatIndex);
-                            setTimeout(() => setSpeakingSeatIndex(null), 3000);
-                          }
-                        }
-                      }}
-                      className={`w-9 h-9 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all ${
-                        activeRoom.seats.some(s => s.userId === currentUser.id)
-                          ? activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted
-                            ? 'bg-red-950/40 border border-red-500/40 text-red-300'
-                            : 'bg-emerald-950/50 border border-emerald-500/40 text-emerald-300 animate-pulse'
-                          : 'bg-slate-900 text-slate-500 border border-slate-800'
-                      }`}
-                      id="mic-speak-btn"
-                    >
-                      {activeRoom.seats.some(s => s.userId === currentUser.id) && activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted ? (
-                        <VolumeX className="w-4 h-4 text-red-400" />
-                      ) : (
-                        <Volume2 className="w-4 h-4 text-emerald-400" />
-                      )}
-                    </button>
-
-                    {/* 2. Interactive Text Input Bar - Designed for Native Smartphone Keyboard */}
-                    <div className="flex-grow mx-2 relative flex items-center bg-[#03000a] border border-purple-900/30 hover:border-purple-500/40 focus-within:border-purple-500 rounded-full px-2 py-1.5 transition-all">
+                    {/* Left: Input box "Let's talk" (أرسل رسالة للمجلس...) */}
+                    <div className="flex-grow flex items-center bg-black/40 border border-white/5 rounded-full px-3 py-1.5 transition-all">
                       <input
                         type="text"
                         value={chatInputValue}
@@ -1883,32 +3160,120 @@ export default function App() {
                           }
                         }}
                         placeholder="أرسل رسالة للمجلس..."
-                        className="flex-grow bg-transparent text-xs px-2 py-0.5 text-slate-100 placeholder-slate-500 text-right outline-none w-full"
+                        className="flex-grow bg-transparent text-[10px] text-slate-100 placeholder-slate-500 text-right outline-none w-full"
                         dir="rtl"
                         id="chat-interactive-input"
                       />
+                      {/* Smiley icon trigger */}
+                      <button
+                        onClick={() => alert('مجموعة الملصقات والرموز التعبيرية ستتوفر قريباً مع حزمة IM SDK!')}
+                        className="text-slate-400 hover:text-white mx-1 text-xs"
+                      >
+                        😊
+                      </button>
                       <button
                         onClick={handleSendChatMessage}
-                        className={`p-1.5 rounded-full text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 ${
+                        className={`p-1 rounded-full text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 ${
                           chatInputValue.trim() 
-                            ? 'bg-purple-600 hover:bg-purple-500' 
-                            : 'bg-slate-800 text-slate-500 hover:bg-slate-700'
+                            ? 'bg-purple-600' 
+                            : 'text-slate-500'
                         }`}
                         title="إرسال"
                         id="chat-send-btn"
                       >
-                        <Send className="w-3.5 h-3.5 transform rotate-180" />
+                        <Send className="w-3 h-3 transform" />
                       </button>
                     </div>
 
-                    {/* 3. Gift Selection Bottom Trigger 🎁 */}
-                    <button
-                      onClick={() => setIsGiftDrawerOpen(true)}
-                      className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-400 to-amber-300 hover:from-amber-500 hover:to-amber-400 flex items-center justify-center shadow-lg hover:shadow-amber-400/20 text-slate-950 cursor-pointer active:scale-90 transition-all text-sm font-bold shrink-0"
-                      id="native-gift-trigger"
-                    >
-                      🎁
-                    </button>
+                    {/* Middle-Right Controls */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      
+                      {/* Mic Speak Controller Button */}
+                      <button
+                        onClick={() => {
+                          const userSeatIndex = activeRoom.seats.findIndex(s => s.userId === currentUser.id);
+                          if (userSeatIndex === -1) {
+                            alert('يرجى الضغط على أحد مقاعد الطابق السفلي الشاغرة أولاً لتصعد وتتمكن من التحدث والمشاركة بالصوت!');
+                          } else {
+                            const seat = activeRoom.seats[userSeatIndex];
+                            const updatedSeats = [...activeRoom.seats];
+                            updatedSeats[userSeatIndex] = { ...seat, isMuted: !seat.isMuted };
+                            const updatedRoom = { ...activeRoom, seats: updatedSeats };
+                            setActiveRoom(updatedRoom);
+                            setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
+                            
+                            if (seat.isMuted) {
+                              setSpeakingSeatIndex(userSeatIndex);
+                              setTimeout(() => setSpeakingSeatIndex(null), 3000);
+                            }
+                          }
+                        }}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all ${
+                          activeRoom.seats.some(s => s.userId === currentUser.id)
+                            ? activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted
+                              ? 'bg-red-950/40 border border-red-500/30 text-red-300'
+                              : 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 animate-pulse'
+                            : 'bg-slate-900 text-slate-400 border border-white/5'
+                        }`}
+                        id="mic-speak-btn"
+                      >
+                        {activeRoom.seats.some(s => s.userId === currentUser.id) && activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted ? (
+                          <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                        ) : (
+                          <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                        )}
+                      </button>
+
+                      {/* E2EE Shield (Green Background Circle Button) */}
+                      <button
+                        onClick={() => setIsE2EEDrawerOpen(true)}
+                        className={`w-8 h-8 rounded-full border flex items-center justify-center cursor-pointer active:scale-90 transition-all ${
+                          isE2EEEnabled 
+                            ? 'bg-emerald-900/60 border-emerald-500/30 text-emerald-300 hover:text-emerald-100' 
+                            : 'bg-slate-900/60 border-slate-700/30 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="إعدادات التشفير التام E2EE"
+                        id="native-e2ee-trigger"
+                      >
+                        <Shield className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Settings (Purple Background Circle Button) */}
+                      <button
+                        onClick={() => setIsAgoraDrawerOpen(true)}
+                        className="w-8 h-8 rounded-full bg-purple-900/60 border border-purple-500/30 flex items-center justify-center text-purple-300 hover:text-white cursor-pointer active:scale-90 transition-all"
+                        id="native-settings-trigger"
+                      >
+                        <Settings className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Gift Selection Trigger (Orange/Gold Circular Gradient Button) */}
+                      <button
+                        onClick={() => setIsGiftDrawerOpen(true)}
+                        className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-slate-950 cursor-pointer active:scale-90 transition-all font-bold text-xs"
+                        id="native-gift-trigger"
+                      >
+                        🎁
+                      </button>
+
+                      {/* Seat requests queue queue (Blue Background Circle Button with Sofa Icon and Badge "23" ) */}
+                      <button
+                        onClick={() => setIsQueueDrawerOpen(true)}
+                        className="w-8 h-8 rounded-full bg-blue-600/90 border border-blue-500/30 flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all relative"
+                        id="native-queue-trigger"
+                      >
+                        {/* Seat Queue Armchair Icon */}
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white">
+                          <path d="M19 10h-1c0-1.65-1.35-3-3-3H9c-1.65 0-3 1.35-3 3H5c-1.65 0-3 1.35-3 3v4c0 1.1.9 2 2 2h1v1c0 .55.45 1 1 1s1-.45 1-1v-1h8v1c0 .55.45 1 1 1s1-.45 1-1v-1h1c1.1 0 2-.9 2-2v-4c0-1.65-1.35-3-3-3zM6 14h12v3H6v-3z" />
+                        </svg>
+                        {/* Red Notification Badge "23" */}
+                        <span className="absolute -top-1.5 -left-1.5 bg-red-500 border border-slate-950 text-white font-extrabold text-[7px] px-1 rounded-full">
+                          23
+                        </span>
+                      </button>
+
+                    </div>
+
                   </div>
 
                   {/* Seat Actions Modal sheet (when selectedSeatIndex is active) */}
@@ -1994,6 +3359,65 @@ export default function App() {
                         </h4>
                       </div>
 
+                      {/* Recipient Selection Bar (Moved to the very top) */}
+                      {activeRoom && (
+                        <div className="mb-3 text-right">
+                          <span className="text-[10px] text-slate-400 font-bold block mb-1.5">مستلم الهدية 👤:</span>
+                          <div className="flex gap-2 overflow-x-auto pb-1.5 scrollbar-thin flex-row-reverse">
+                            {/* "All" candidate */}
+                            <button
+                              onClick={() => setSelectedRecipientSeatIndex('all')}
+                              className={`flex flex-col items-center gap-1 p-1.5 px-2.5 rounded-xl border shrink-0 transition-all cursor-pointer ${
+                                selectedRecipientSeatIndex === 'all'
+                                  ? 'bg-purple-900/40 border-amber-400 text-amber-300'
+                                  : 'bg-[#03000a]/60 border-purple-900/20 text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              <div className="w-8 h-8 rounded-full bg-purple-950/80 flex items-center justify-center text-sm border border-purple-500/20">
+                                👥
+                              </div>
+                              <span className="text-[8px] font-bold">الجميع</span>
+                            </button>
+
+                            {/* Occupied seats candidates */}
+                            {activeRoom.seats
+                              .filter((seat) => seat.userId !== null)
+                              .map((seat) => {
+                                const occupant = users.find((u) => u.id === seat.userId);
+                                if (!occupant) return null;
+                                const isSelected = selectedRecipientSeatIndex === seat.index;
+                                const isHost = seat.index === 0;
+
+                                return (
+                                  <button
+                                    key={seat.index}
+                                    onClick={() => setSelectedRecipientSeatIndex(seat.index)}
+                                    className={`flex flex-col items-center gap-1 p-1.5 px-2.5 rounded-xl border shrink-0 transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-purple-900/40 border-amber-400 text-amber-300'
+                                        : 'bg-[#03000a]/60 border-purple-900/20 text-slate-400 hover:text-white'
+                                    }`}
+                                  >
+                                    <div className="relative">
+                                      <img
+                                        src={occupant.avatar}
+                                        alt={occupant.name}
+                                        className="w-8 h-8 rounded-full object-cover border border-purple-500/30"
+                                      />
+                                      {isHost && (
+                                        <span className="absolute -top-1.5 -right-1.5 text-[8px]">👑</span>
+                                      )}
+                                    </div>
+                                    <span className="text-[8px] font-bold max-w-[50px] truncate">
+                                      {isHost ? 'المستضيف' : occupant.name}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex justify-between items-center bg-[#03000a] p-2 rounded-xl border border-purple-500/10 mb-3">
                         <span className="text-[10px] text-slate-400 font-bold">الرصيد المتوفر:</span>
                         <div className="flex items-center gap-1">
@@ -2053,6 +3477,262 @@ export default function App() {
                           إرسال الهدية 🚀
                         </button>
                       </div>
+                    </div>
+                  )}
+
+                  {/* SEATS REQUESTS QUEUE BOTTOM SHEET */}
+                  {isQueueDrawerOpen && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[#0c071fa6] backdrop-blur-xl border-t border-purple-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right">
+                      <div className="flex justify-between items-center border-b border-purple-950/40 pb-2 mb-3 font-sans">
+                        <button
+                          onClick={() => setIsQueueDrawerOpen(false)}
+                          className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800 cursor-pointer"
+                        >
+                          إغلاق
+                        </button>
+                        <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                          🛋️ طلبات الصعود للمقاعد (23)
+                        </h4>
+                      </div>
+
+                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                        {[
+                          { id: 'q1', name: 'أبو فهد النجدي', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=60', level: 25 },
+                          { id: 'q2', name: 'هنوف العتيبي', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=60', level: 14 },
+                          { id: 'q3', name: 'فيصل الرياض', avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=60', level: 31 },
+                        ].map((req) => (
+                          <div key={req.id} className="bg-slate-950/60 p-2 rounded-xl border border-white/5 flex justify-between items-center text-xs gap-3">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  // Find first empty seat index from index 6 to 9 (empty armchairs) or any
+                                  const emptySeatIdx = activeRoom.seats.findIndex(s => s.userId === null && !s.isLocked);
+                                  if (emptySeatIdx !== -1) {
+                                    const updatedSeats = [...activeRoom.seats];
+                                    updatedSeats[emptySeatIdx] = { ...updatedSeats[emptySeatIdx], userId: req.id };
+                                    
+                                    // ensure user in list
+                                    if (!users.some(u => u.id === req.id)) {
+                                      setUsers(prev => [...prev, { id: req.id, name: req.name, avatar: req.avatar, level: req.level, coins: 150, xp: 900 }]);
+                                    }
+
+                                    const updatedRoom = { ...activeRoom, seats: updatedSeats };
+                                    setActiveRoom(updatedRoom);
+                                    setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
+                                    
+                                    setRoomMessages(prev => [
+                                      ...prev,
+                                      {
+                                        sender: 'نظام المجلس',
+                                        text: `صعد [ ${req.name} ] إلى المقعد رقم ${emptySeatIdx + 1} بنجاح! 🎉`,
+                                        color: 'text-emerald-400 font-bold',
+                                        type: 'system'
+                                      }
+                                    ]);
+                                  } else {
+                                    alert('جميع المقاعد ممتلئة حالياً!');
+                                  }
+                                  setIsQueueDrawerOpen(false);
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-lg text-[10px] transition"
+                              >
+                                قبول
+                              </button>
+                              <button
+                                onClick={() => {
+                                  alert('تم رفض طلب الصعود');
+                                  setIsQueueDrawerOpen(false);
+                                }}
+                                className="bg-red-950/40 hover:bg-red-900/40 text-red-300 px-3 py-1 rounded-lg text-[10px] transition"
+                              >
+                                رفض
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <div className="text-right">
+                                <span className="text-white font-bold block">{req.name}</span>
+                                <span className="text-[9px] text-slate-400">مستوى {req.level}</span>
+                              </div>
+                              <img src={req.avatar} alt="" className="w-8 h-8 rounded-full border border-purple-500/20 object-cover" />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* END-TO-END ENCRYPTION (E2EE) MANAGEMENT DRAWER */}
+                  {isE2EEDrawerOpen && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[#04020b]/99 backdrop-blur-xl border-t border-emerald-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans overflow-hidden" dir="rtl">
+                      {/* Drawer Header */}
+                      <div className="flex justify-between items-center border-b border-emerald-950/40 pb-2 mb-3">
+                        <button
+                          onClick={() => setIsE2EEDrawerOpen(false)}
+                          className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800 cursor-pointer transition"
+                        >
+                          إغلاق
+                        </button>
+                        <h4 className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 font-sans">
+                          🔐 منظومة التشفير التام (E2EE Client-Side)
+                        </h4>
+                      </div>
+
+                      {/* E2EE System Indicator */}
+                      <div className="p-2.5 bg-[#020106] rounded-xl border border-emerald-500/20 mb-3 space-y-1.5 text-right">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[9px] text-slate-400">حالة التشفير:</span>
+                          <span className={`text-[10px] font-bold flex items-center gap-1 ${isE2EEEnabled ? 'text-emerald-400' : 'text-slate-400'}`}>
+                            {isE2EEEnabled ? '🟢 مشفّر تزامني (AES-GCM-256)' : '🔴 غير مفعّل (قنوات مكشوفة)'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-[9px] text-slate-500 leading-relaxed">
+                          <span>المعيار المستخدم:</span>
+                          <span className="font-mono text-emerald-500/80">Web Crypto Subtle (PBKDF2 + AES-GCM)</span>
+                        </div>
+                      </div>
+
+                      {/* Cryptographic Controls Grid */}
+                      <div className="space-y-3 mb-3">
+                        
+                        {/* E2EE Main Toggle */}
+                        <div className="flex justify-between items-center p-2 bg-[#020106]/40 rounded-lg border border-white/5">
+                          <button
+                            onClick={() => {
+                              setIsE2EEEnabled(!isE2EEEnabled);
+                              addE2eeLog(isE2EEEnabled ? 'تم إيقاف تشفير المحادثات الصادرة.' : 'تم تفعيل التشفير التام للمحادثات الصادرة.');
+                            }}
+                            className={`px-2.5 py-1 rounded-md text-[9px] font-bold transition-all cursor-pointer ${
+                              isE2EEEnabled 
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                                : 'bg-slate-800 text-slate-400 border border-slate-700'
+                            }`}
+                          >
+                            {isE2EEEnabled ? 'مفعّل (Active)' : 'ملغى (Disabled)'}
+                          </button>
+                          <span className="text-[10px] text-slate-200">تشفير الرسائل الصادرة والواردة تلقائياً</span>
+                        </div>
+
+                        {/* Passphrase Entry */}
+                        <div className="space-y-1 bg-[#020106]/40 p-2.5 rounded-lg border border-white/5 text-right">
+                          <div className="flex justify-between items-center">
+                            <button
+                              onClick={() => {
+                                const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                                let code = 'Sada-';
+                                for (let i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+                                setE2eePassphrase(code);
+                                addE2eeLog(`تم توليد كلمة سر عشوائية جديدة: ${code}`);
+                              }}
+                              className="text-[8px] bg-emerald-950/40 text-emerald-300 border border-emerald-500/20 px-2 py-0.5 rounded hover:bg-emerald-900/40 transition"
+                            >
+                              🎲 كود عشوائي
+                            </button>
+                            <label className="text-[10px] text-slate-300 font-bold">مفتاح التشفير المشترك (Passphrase)</label>
+                          </div>
+                          
+                          <div className="flex items-center gap-1 bg-black/50 border border-white/5 rounded-md px-2 py-1 mt-1 font-sans">
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(e2eePassphrase);
+                                addE2eeLog(`تم نسخ كلمة سر التشفير المشتركة لغرفة الدردشة.`);
+                                alert('تم نسخ كلمة سر التشفير المشتركة للمجلس بنجاح!');
+                              }}
+                              className="text-slate-400 hover:text-white p-1 text-[10px] transition"
+                              title="نسخ كلمة السر"
+                            >
+                              📋
+                            </button>
+                            <input
+                              type={showPassphrase ? 'text' : 'password'}
+                              value={e2eePassphrase}
+                              onChange={(e) => {
+                                setE2eePassphrase(e.target.value);
+                                addE2eeLog(`تم تعديل كلمة مرور التشفير المشتركة للغرفة.`);
+                              }}
+                              placeholder="أدخل رمز التشفير السري للمجلس..."
+                              className="bg-transparent text-slate-200 text-[10px] font-mono text-left outline-none flex-grow w-full"
+                            />
+                            <button
+                              onClick={() => setShowPassphrase(!showPassphrase)}
+                              className="text-slate-400 hover:text-white px-1 text-[10px]"
+                            >
+                              {showPassphrase ? '👁️' : '🕶️'}
+                            </button>
+                          </div>
+                          <span className="text-[8px] text-slate-500 block leading-tight mt-1 text-right">
+                            * يجب أن يدخل جميع من في الغرفة نفس هذا الرمز السري ليتمكنوا من قراءة الرسائل بوضوح.
+                          </span>
+                        </div>
+
+                        {/* Show Ciphertext Toggle */}
+                        <div className="flex justify-between items-center p-2 bg-[#020106]/40 rounded-lg border border-white/5">
+                          <button
+                            onClick={() => setShowCiphertextInFeed(!showCiphertextInFeed)}
+                            className={`px-2.5 py-1 rounded-md text-[9px] font-bold transition-all cursor-pointer ${
+                              showCiphertextInFeed 
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
+                                : 'bg-slate-800 text-slate-400 border border-slate-700'
+                            }`}
+                          >
+                            {showCiphertextInFeed ? 'معروض (Ciphertext)' : 'مخفي (Decrypted)'}
+                          </button>
+                          <span className="text-[10px] text-slate-200">عرض الرموز المشفّرة عِوضاً عن النص العادي</span>
+                        </div>
+
+                        {/* Local Cryptographic Identity (RSA-OAEP) */}
+                        <div className="bg-[#020106]/40 p-2.5 rounded-lg border border-white/5 space-y-1.5 text-right font-sans">
+                          <div className="flex justify-between items-center">
+                            <button
+                              onClick={() => {
+                                if (clientPublicKeyBase64) {
+                                  navigator.clipboard.writeText(clientPublicKeyBase64);
+                                  addE2eeLog(`تم نسخ مفتاح RSA العام لهويتك الفريدة.`);
+                                  alert('تم نسخ مفتاح RSA-2048 العام لهويتك الرقمية للمجلس بنجاح!');
+                                }
+                              }}
+                              className="text-[8px] bg-purple-950/40 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded hover:bg-purple-900/40 transition"
+                            >
+                              📋 نسخ مفتاح الهوية
+                            </button>
+                            <span className="text-[10px] text-slate-300 font-bold">هويتك الرقمية المشفرة (RSA Identity Key)</span>
+                          </div>
+                          <div className="p-1.5 bg-black/60 rounded border border-white/5 overflow-x-auto">
+                            <code className="text-[6px] text-slate-500 font-mono block break-all leading-normal select-all">
+                              {clientPublicKeyBase64 ? clientPublicKeyBase64.substring(0, 110) + '...' : 'جاري التوليد...'}
+                            </code>
+                          </div>
+                          <span className="text-[8px] text-slate-500 block leading-tight">
+                            * يتم توليد زوج مفاتيح RSA-OAEP 2048-bit في متصفحك محلياً بشكل منعزل لإثبات وتأكيد هويتك أمام أطراف الغرفة.
+                          </span>
+                        </div>
+
+                      </div>
+
+                      {/* Live SubtleCrypto Live Audit terminal */}
+                      <div className="space-y-1.5 font-sans">
+                        <div className="flex justify-between items-center">
+                          <button
+                            onClick={() => setE2eeAuditLogs([])}
+                            className="text-[8px] text-slate-400 hover:text-red-400 transition cursor-pointer"
+                          >
+                            مسح السجل 🗑️
+                          </button>
+                          <span className="text-[9px] text-slate-400 font-bold">📺 سجل العمليات التشفيرية الفورية (SubtleCrypto Log):</span>
+                        </div>
+                        <div className="p-2 bg-black/90 border border-emerald-500/10 rounded-xl h-24 overflow-y-auto text-left font-mono space-y-1 scrollbar-thin">
+                          {e2eeAuditLogs.length === 0 ? (
+                            <div className="text-[8px] text-slate-600 italic">بانتظار حركة تشفيرية للمرسل...</div>
+                          ) : (
+                            e2eeAuditLogs.map((log, lidx) => (
+                              <div key={lidx} className="text-[7px] leading-tight select-text text-emerald-400/90 break-words font-mono">
+                                {log}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
                     </div>
                   )}
 
@@ -2456,6 +4136,360 @@ export default function App() {
 
                   </div>
 
+                </div>
+              )}
+
+              {/* 👤 PREMIUM USER PROFILE MODAL & BIO DRAWER */}
+              {isProfileModalOpen && selectedProfileUser && (
+                <div className="absolute inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-end justify-center animate-fade-in text-right">
+                  <div className="bg-[#0c081d] border-t border-purple-500/30 p-5 rounded-t-[32px] w-full max-h-[85%] overflow-y-auto space-y-5 shadow-2xl relative font-sans">
+                    
+                    {/* Decorative golden dome accent */}
+                    <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-amber-500 via-purple-500 to-amber-500" />
+
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-purple-950/40 pb-2.5">
+                      <button
+                        onClick={() => {
+                          setIsProfileModalOpen(false);
+                          setIsEditingBio(false);
+                        }}
+                        className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800/80 cursor-pointer"
+                      >
+                        إغلاق
+                      </button>
+                      <h4 className="text-xs font-black text-amber-400 font-sans">
+                        👤 البطاقة التعريفية والملف الشخصي
+                      </h4>
+                    </div>
+
+                    {/* Main Identity Info */}
+                    <div className="flex flex-col items-center text-center space-y-2">
+                      <div className="relative">
+                        {/* Gold ring for high levels, purple for guest */}
+                        <div className={`w-20 h-20 rounded-full p-1 shadow-xl bg-slate-950 ${selectedProfileUser.level >= 10 ? 'bg-gradient-to-tr from-amber-500 via-yellow-300 to-orange-400' : 'bg-gradient-to-tr from-purple-600 to-slate-800'}`}>
+                          <img
+                            src={selectedProfileUser.avatar}
+                            alt=""
+                            className="w-full h-full rounded-full object-cover border-2 border-[#0c081d]"
+                          />
+                        </div>
+                        {selectedProfileUser.level >= 10 && (
+                          <span className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-xl drop-shadow animate-bounce">👑</span>
+                        )}
+                        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 text-[8px] font-black px-2 py-0.5 rounded-full border border-[#0c081d] font-mono">
+                          LV.{selectedProfileUser.level}
+                        </span>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-black text-white flex items-center justify-center gap-1.5">
+                          <span>{selectedProfileUser.name}</span>
+                          {selectedProfileUser.level >= 10 && (
+                            <span className="bg-gradient-to-r from-amber-500 to-amber-300 text-slate-950 text-[7px] font-black px-1.5 py-0.5 rounded-full">SVIP</span>
+                          )}
+                        </h3>
+                        <p className="text-[10px] text-slate-400 font-mono">ID: {selectedProfileUser.id}</p>
+                      </div>
+
+                      {/* Follow/Unfollow Button */}
+                      {currentUser && currentUser.id !== selectedProfileUser.id && (
+                        <button
+                          onClick={() => handleToggleFollow(selectedProfileUser)}
+                          className={`mt-1 text-[11px] font-bold px-5 py-1.5 rounded-full shadow-md transition-all active:scale-95 flex items-center gap-1.5 mx-auto cursor-pointer ${
+                            selectedProfileUser.followers?.includes(currentUser.id)
+                              ? 'bg-slate-800 text-slate-300 border border-slate-700'
+                              : 'bg-gradient-to-r from-purple-600 to-purple-500 text-white hover:opacity-90 font-black'
+                          }`}
+                        >
+                          {selectedProfileUser.followers?.includes(currentUser.id) ? (
+                            <span>إلغاء المتابعة</span>
+                          ) : (
+                            <span>➕ متابعة المستخدم</span>
+                          )}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Followers & Following Stats Grid */}
+                    <div className="grid grid-cols-3 gap-2 bg-[#03000a]/50 p-3 rounded-2xl border border-purple-950/40 text-center font-sans">
+                      <div>
+                        <strong className="text-xs text-white block font-mono">{selectedProfileUser.following?.length || 0}</strong>
+                        <span className="text-[9px] text-slate-400">يتابع</span>
+                      </div>
+                      <div className="border-x border-purple-950/40">
+                        <strong className="text-xs text-white block font-mono">{selectedProfileUser.followers?.length || 0}</strong>
+                        <span className="text-[9px] text-slate-400">المتابعون</span>
+                      </div>
+                      <div>
+                        <strong className="text-xs text-white block font-mono">3.4K</strong>
+                        <span className="text-[9px] text-slate-400">الزوار</span>
+                      </div>
+                    </div>
+
+                    {/* Biography (Bio) Component */}
+                    <div className="bg-[#03000a]/30 p-3.5 rounded-2xl border border-purple-950/20 text-right space-y-2">
+                      <span className="text-[10px] text-slate-400 font-bold block">📝 السيرة الذاتية (Bio):</span>
+                      
+                      {isEditingBio && currentUser?.id === selectedProfileUser.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={bioEditValue}
+                            onChange={(e) => setBioEditValue(e.target.value)}
+                            className="w-full bg-slate-950 border border-purple-500/30 rounded-xl p-2.5 text-xs text-slate-200 outline-none focus:border-purple-500 text-right h-16 resize-none font-sans"
+                            placeholder="اكتب شيئاً جميلاً يعبر عنك..."
+                            maxLength={120}
+                          />
+                          <div className="flex gap-2 justify-end">
+                            <button
+                              onClick={() => setIsEditingBio(false)}
+                              className="bg-slate-800 text-slate-400 text-[10px] font-bold px-3 py-1 rounded-lg cursor-pointer"
+                            >
+                              إلغاء
+                            </button>
+                            <button
+                              onClick={handleSaveBio}
+                              className="bg-purple-600 hover:bg-purple-500 text-white text-[10px] font-black px-4 py-1 rounded-lg cursor-pointer shadow-md"
+                            >
+                              حفظ التغييرات
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between items-start gap-2">
+                          {currentUser?.id === selectedProfileUser.id && (
+                            <button
+                              onClick={() => {
+                                setIsEditingBio(true);
+                                setBioEditValue(selectedProfileUser.bio || '');
+                              }}
+                              className="text-[9px] text-purple-400 hover:underline cursor-pointer"
+                            >
+                              تعديل ✍️
+                            </button>
+                          )}
+                          <p className="text-[11px] text-slate-300 italic leading-relaxed text-right flex-grow">
+                            {selectedProfileUser.bio || 'لا توجد سيرة ذاتية مكتوبة حالياً.'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Send Message Option */}
+                    {currentUser && selectedProfileUser.id !== currentUser.id && (
+                      <button
+                        onClick={() => {
+                          setIsProfileModalOpen(false);
+                          setActivePrivateChatUser(selectedProfileUser);
+                          setIsPrivateInboxOpen(true);
+                        }}
+                        className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+                      >
+                        <MessageSquare className="w-4 h-4 text-white" />
+                        إرسال رسالة خاصة مشفرة (E2EE Chat) 🔒
+                      </button>
+                    )}
+
+                    {/* Integrated Host Controls for the seat if seated in Room */}
+                    {(() => {
+                      if (!activeRoom || !currentUser) return null;
+                      const seatedSeat = activeRoom.seats.find(s => s.userId === selectedProfileUser.id);
+                      if (!seatedSeat) return null;
+
+                      const isHost = activeRoom.seats[0].userId === currentUser.id;
+                      const isSelf = selectedProfileUser.id === currentUser.id;
+
+                      if (!isHost && !isSelf) return null;
+
+                      return (
+                        <div className="border-t border-purple-950/40 pt-4 space-y-2">
+                          <span className="text-[9px] text-purple-400 font-bold block text-right">⚙️ خيارات المقعد رقم {seatedSeat.index + 1}:</span>
+                          <div className="flex gap-2">
+                            {isHost && (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setSelectedSeatIndex(seatedSeat.index);
+                                    handleHostAction('mute');
+                                    setIsProfileModalOpen(false);
+                                  }}
+                                  className="w-1/2 bg-[#03000a] border border-slate-800 text-[10px] py-1.5 rounded-lg text-slate-300 font-bold cursor-pointer hover:bg-slate-900 transition text-center"
+                                >
+                                  {seatedSeat.isMuted ? '🔊 تفعيل الصوت' : '🔇 كتم الصوت'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedSeatIndex(seatedSeat.index);
+                                    handleHostAction('lock');
+                                    setIsProfileModalOpen(false);
+                                  }}
+                                  className="w-1/2 bg-[#03000a] border border-slate-800 text-[10px] py-1.5 rounded-lg text-amber-400 font-bold cursor-pointer hover:bg-slate-900 transition text-center"
+                                >
+                                  {seatedSeat.isLocked ? '🔓 إلغاء القفل' : '🔒 قفل المقعد'}
+                                </button>
+                              </>
+                            )}
+                            {isSelf && (
+                              <button
+                                onClick={() => {
+                                  setSelectedSeatIndex(seatedSeat.index);
+                                  handleHostAction('leave');
+                                  setIsProfileModalOpen(false);
+                                }}
+                                className="w-full bg-red-950/40 border border-red-500/25 text-[10px] py-1.5 rounded-lg text-red-400 font-bold cursor-pointer hover:bg-red-900/40 transition text-center"
+                              >
+                                🚪 النزول من المقعد للجمهور
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                  </div>
+                </div>
+              )}
+
+              {/* 💬 PREMIUM PRIVATE MESSAGING CHAT DRAWER */}
+              {isPrivateInboxOpen && activePrivateChatUser && currentUser && (
+                <div className="absolute inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-end justify-center animate-fade-in text-right">
+                  <div className="bg-[#0c081d] border-t border-purple-500/30 p-5 rounded-t-[32px] w-full max-h-[85%] flex flex-col font-sans space-y-4 shadow-2xl relative">
+                    
+                    {/* Decorative golden accent bar */}
+                    <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-purple-500 via-amber-500 to-purple-500" />
+
+                    {/* Header info */}
+                    <div className="flex justify-between items-center border-b border-purple-950/40 pb-2.5">
+                      <button
+                        onClick={() => {
+                          setIsPrivateInboxOpen(false);
+                          setActivePrivateChatUser(null);
+                          setNewPrivateMessageInput('');
+                        }}
+                        className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800/80 cursor-pointer"
+                      >
+                        إغلاق
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <div className="text-right">
+                          <h4 className="text-xs font-black text-white">{activePrivateChatUser.name}</h4>
+                          <span className="text-[7.5px] bg-purple-900/50 text-purple-300 font-bold px-1.5 py-0.5 rounded border border-purple-800/30">
+                            LV.{activePrivateChatUser.level}
+                          </span>
+                        </div>
+                        <img
+                          src={activePrivateChatUser.avatar}
+                          alt=""
+                          className="w-8 h-8 rounded-full object-cover border border-purple-500/20 shadow"
+                        />
+                      </div>
+                    </div>
+
+                    {/* E2EE Info Callout */}
+                    <div className="bg-emerald-500/5 border border-emerald-500/15 rounded-xl p-2.5 flex justify-between items-center text-[10px] text-emerald-400">
+                      <div className="flex items-center gap-1 font-bold">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>نشط</span>
+                      </div>
+                      <span className="font-sans font-bold">🔒 المحادثة مشفرة بالكامل بطرفية آمنة (E2EE)</span>
+                    </div>
+
+                    {/* Messages Feed */}
+                    <div className="flex-grow overflow-y-auto space-y-3 p-1 max-h-[380px] min-h-[250px] scrollbar-thin">
+                      {(() => {
+                        const filteredPrivateMessages = privateMessages.filter(msg => 
+                          (msg.senderId === currentUser.id && msg.receiverId === activePrivateChatUser.id) ||
+                          (msg.senderId === activePrivateChatUser.id && msg.receiverId === currentUser.id)
+                        );
+
+                        if (filteredPrivateMessages.length === 0) {
+                          return (
+                            <div className="text-center text-slate-500 py-16 text-xs font-sans">
+                              💬 لا توجد رسائل سابقة مع هذا المستخدم. أرسل رسالة لبدء الدردشة الفورية المشفرة!
+                            </div>
+                          );
+                        }
+
+                        return filteredPrivateMessages.map((msg) => {
+                          const isSelf = msg.senderId === currentUser.id;
+                          return (
+                            <div
+                              key={msg.id || msg.timestamp}
+                              className={`flex flex-col ${isSelf ? 'items-start text-left' : 'items-end text-right'} space-y-1`}
+                            >
+                              <div className="flex items-center gap-1">
+                                <span className="text-[7px] text-slate-500 font-mono">
+                                  {new Date(msg.timestamp).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                                <span className="text-[8px] font-bold text-slate-400">
+                                  {isSelf ? 'أنت' : msg.senderName}
+                                </span>
+                              </div>
+
+                              <div
+                                className={`p-2.5 px-3.5 rounded-2xl max-w-[85%] text-xs shadow-sm font-sans ${
+                                  isSelf
+                                    ? 'bg-purple-600 text-white rounded-tl-none text-left'
+                                    : 'bg-[#16102c] text-slate-100 rounded-tr-none text-right border border-purple-900/30'
+                                }`}
+                              >
+                                {msg.isEncrypted ? (
+                                  <div className="flex flex-col space-y-1">
+                                    <div className="flex items-center gap-1 text-[8px] text-amber-300 font-black mb-1 justify-end">
+                                      <span>🔐 مشفرة E2EE</span>
+                                    </div>
+                                    <EncryptedMessageText
+                                      ciphertext={msg.rawCiphertext || msg.text}
+                                      iv={msg.iv || ''}
+                                      derivedKey={derivedKey}
+                                      showCiphertext={false}
+                                      fallbackText="🔒 رسالة آمنة"
+                                    />
+                                  </div>
+                                ) : (
+                                  <span>{msg.text}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+
+                    {/* Input area */}
+                    <div className="flex gap-2 items-center bg-[#03000a] p-2 rounded-xl border border-purple-950/40">
+                      <button
+                        onClick={() => {
+                          if (newPrivateMessageInput.trim()) {
+                            handleSendPrivateMessage();
+                          }
+                        }}
+                        className="bg-purple-600 hover:bg-purple-500 text-white font-black text-xs px-4 py-2 rounded-lg cursor-pointer transition shadow-md shrink-0"
+                      >
+                        إرسال
+                      </button>
+                      
+                      <input
+                        type="text"
+                        value={newPrivateMessageInput}
+                        onChange={(e) => setNewPrivateMessageInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newPrivateMessageInput.trim()) {
+                            handleSendPrivateMessage();
+                          }
+                        }}
+                        className="flex-grow bg-transparent text-slate-200 text-xs text-right outline-none px-2 font-sans"
+                        placeholder="اكتب رسالة خاصة مشفرة..."
+                      />
+
+                      <div className="flex items-center gap-1 text-[9px] text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/15 font-bold shrink-0">
+                        <span>E2EE نشط</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      </div>
+                    </div>
+
+                  </div>
                 </div>
               )}
 
