@@ -655,7 +655,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-0 md:p-4 relative overflow-hidden" id="root-container">
+    <div className="min-h-screen bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-0 relative overflow-hidden" id="root-container">
       {/* Ambient background glows */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-900/10 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-[#7C3AED]/10 rounded-full blur-[150px] pointer-events-none"></div>
@@ -875,55 +875,12 @@ export default function App() {
 
         </div>
 
-        {/* RIGHT COLUMN: Interactive Smartphone Simulator Container (Adapts perfectly to actual mobile devices) */}
-        <div className="flex flex-col items-center justify-center w-full min-h-screen md:min-h-0" id="phone-simulator-container">
+        {/* RIGHT COLUMN: Full-Screen Responsive App Container (No frames, adapts completely to screen width and native device edges) */}
+        <div className="flex flex-col items-center justify-center w-full min-h-screen" id="phone-simulator-container">
 
-          {/* Device Shell - Becomes fully borderless & adapts to real mobile width/edges */}
-          <div className="relative w-full md:max-w-md min-h-screen md:min-h-[820px] md:max-h-[92vh] bg-[#03000a] md:rounded-3xl md:border md:border-purple-500/15 md:shadow-[0_0_60px_rgba(124,58,237,0.12)] flex flex-col font-sans overflow-hidden" id="smartphone-device">
+          {/* Device Shell - Fully responsive full-screen canvas */}
+          <div className="relative w-full min-h-screen bg-[#03000a] flex flex-col font-sans overflow-hidden" id="smartphone-device">
             
-            {/* Top Notch / Dynamic Island Simulation (Only on Desktop preview mode) */}
-            {!deviceInfo.isMobile && (
-              <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-28 h-5.5 bg-black rounded-full z-50 flex items-center justify-between px-2.5 border border-slate-800/80 shadow-inner">
-                <div className="w-1.5 h-1.5 bg-[#0e1726] rounded-full"></div>
-                <div className="w-8 h-1 bg-slate-900 rounded-full opacity-60"></div>
-                <div className="w-1.5 h-1.5 bg-slate-950 rounded-full border border-purple-900/40 relative flex items-center justify-center">
-                  <div className="w-0.5 h-0.5 bg-blue-500 rounded-full animate-pulse"></div>
-                </div>
-              </div>
-            )}
-
-            {/* Adaptive Smart Status Bar (Automatically shows your device info and adapts spacing) */}
-            <div className={`bg-slate-950/90 text-white text-[10px] px-5 pb-2.5 flex justify-between items-center z-40 select-none font-mono border-b border-purple-950/10 ${
-              deviceInfo.isMobile ? 'pt-4' : 'pt-8'
-            }`}>
-              <span 
-                onClick={() => {
-                  if (currentUser) {
-                    setIsAdminDrawerOpen(true);
-                  } else {
-                    alert('قم بتسجيل الدخول أولاً لتتمكن من فتح لوحة تحكم المطورين!');
-                  }
-                }}
-                className="font-sans font-medium text-slate-300 hover:text-purple-400 transition cursor-pointer active:scale-95 flex items-center gap-1"
-                title="لوحة المطورين السرية"
-              >
-                <span>{currentTime || '06:09 م'}</span>
-                <span className="text-[7px] text-purple-600/30">🛠️</span>
-              </span>
-              
-              <div className="flex items-center gap-1.5">
-                {/* Real-time Smartphone Detection Badge */}
-                <span className="text-[9px] bg-purple-950/80 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/25 font-bold tracking-wider flex items-center gap-1">
-                  <span>{deviceInfo.platform === 'ios' ? '' : deviceInfo.platform === 'android' ? '🤖' : '💻'}</span>
-                  <span>{deviceInfo.modelName}</span>
-                </span>
-                <span className="text-[8px] bg-purple-950 text-purple-300 px-1 rounded border border-purple-500/20 font-bold tracking-wider">5G</span>
-                <span className="w-4.5 h-2.5 border border-white/40 rounded-xs relative flex items-center p-0.5">
-                  <span className="h-full w-5/6 bg-emerald-500 rounded-3xs animate-pulse"></span>
-                </span>
-              </div>
-            </div>
-
             {/* Smartphone Live Screen Content Area */}
             <div className="flex-grow flex flex-col bg-[#03000a] text-slate-100 overflow-hidden relative" id="smartphone-screen">
               
@@ -933,7 +890,11 @@ export default function App() {
                   
                   {/* Brand Branding */}
                   <div className="text-center mt-12">
-                    <div className="w-16 h-16 bg-gradient-to-tr from-[#7C3AED] via-[#C026D3] to-amber-400 p-0.5 rounded-2xl shadow-xl shadow-purple-900/50 mx-auto flex items-center justify-center mb-3">
+                    <div 
+                      onClick={() => setIsAdminDrawerOpen(true)}
+                      className="w-16 h-16 bg-gradient-to-tr from-[#7C3AED] via-[#C026D3] to-amber-400 p-0.5 rounded-2xl shadow-xl shadow-purple-900/50 mx-auto flex items-center justify-center mb-3 cursor-pointer hover:scale-105 active:scale-95 transition-all"
+                      title="فتح لوحة المطورين والتحكم"
+                    >
                       <div className="w-full h-full bg-[#03000a] rounded-[14px] flex items-center justify-center">
                         <span className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-amber-300">صدى</span>
                       </div>
@@ -1104,8 +1065,12 @@ export default function App() {
                   </div>
 
                   {/* Footnote */}
-                  <div className="text-center text-[9px] text-slate-500 pb-2">
-                    بالتسجيل أنت توافق على شروط الاستخدام وقوانين المجالس صدى العرب.
+                  <div className="text-center text-[9px] text-slate-500 pb-2 flex flex-col items-center gap-1.5">
+                    <span>بالتسجيل أنت توافق على شروط الاستخدام وقوانين المجالس صدى العرب.</span>
+                    <span className="text-purple-400 font-bold bg-purple-950/50 border border-purple-500/20 px-2.5 py-0.5 rounded-full flex items-center gap-1 font-sans">
+                      <span>📱 تم الكشف التلقائي عن:</span>
+                      <span className="text-white">{deviceInfo.modelName}</span>
+                    </span>
                   </div>
                 </div>
               )}
@@ -1129,9 +1094,15 @@ export default function App() {
                       </div>
                       <div className="text-right">
                         <h4 className="text-xs font-bold text-white max-w-[120px] truncate">{currentUser.name}</h4>
-                        <div className="flex items-center gap-1 text-[10px] text-amber-300">
-                          <Coins className="w-3 h-3 text-amber-400" />
-                          <span>🪙 {currentUser.coins.toFixed(0)} كوينز</span>
+                        <div className="flex flex-col gap-0.5 mt-0.5">
+                          <div className="flex items-center gap-1 text-[10px] text-amber-300">
+                            <Coins className="w-3 h-3 text-amber-400" />
+                            <span>🪙 {currentUser.coins.toFixed(0)} كوينز</span>
+                          </div>
+                          <span className="text-[8px] bg-purple-950/80 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/25 font-bold tracking-wider flex items-center gap-1">
+                            <span>{deviceInfo.platform === 'ios' ? '' : deviceInfo.platform === 'android' ? '🤖' : '💻'}</span>
+                            <span>{deviceInfo.modelName}</span>
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1146,6 +1117,15 @@ export default function App() {
                       >
                         <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
                         بوابة الوكيل
+                      </button>
+
+                      <button
+                        onClick={() => setIsAdminDrawerOpen(true)}
+                        className="bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/20 p-1.5 rounded-lg text-purple-300 hover:text-purple-200 transition-all active:scale-90 duration-100 transform cursor-pointer"
+                        title="لوحة التحكم والمطورين"
+                        id="developer-drawer-btn"
+                      >
+                        <Settings className="w-3.5 h-3.5" />
                       </button>
 
                       <button
@@ -2206,12 +2186,7 @@ export default function App() {
 
             </div>
 
-            {/* Bottom Home Indicator Line (Only on Desktop preview mode) */}
-            {!deviceInfo.isMobile && (
-              <div className="bg-slate-950 pb-3 flex justify-center items-center z-40 select-none">
-                <div className="w-28 h-1 bg-slate-700 rounded-full"></div>
-              </div>
-            )}
+            {/* Smart Canvas End */}
 
           </div>
 
