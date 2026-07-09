@@ -126,8 +126,6 @@ export default function App() {
   
   // Interactive Arabic Room Live Chat messages & Input State
   const [chatInputValue, setChatInputValue] = useState('');
-  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
-  const [keyboardLanguage, setKeyboardLanguage] = useState<'ar' | 'en'>('ar');
   const [roomMessages, setRoomMessages] = useState<Array<{ sender: string; text: string; color?: string; type?: 'chat' | 'system' | 'vip' }>>([
     { sender: 'نظام المجلس', text: 'مرحباً بكم في صدى العرب! يرجى الالتزام بالاحترام المتبادل داخل مجالسنا الموقرة.', color: 'text-purple-400 font-bold', type: 'system' },
     { sender: 'خالد الحربي', text: 'السلام عليكم ورحمة الله، حياكم الله جميعاً بالمجلس الدافئ.', color: 'text-amber-400', type: 'chat' },
@@ -1571,42 +1569,34 @@ export default function App() {
                       )}
                     </button>
 
-                    {/* 2. Interactive Text Input Bar with Real-Time Keyboard Toggle */}
-                    <div className="flex-grow mx-2 relative flex items-center bg-[#03000a] border border-purple-900/30 hover:border-purple-500/40 focus-within:border-purple-500 rounded-full px-1.5 py-1 transition-all">
+                    {/* 2. Interactive Text Input Bar - Designed for Native Smartphone Keyboard */}
+                    <div className="flex-grow mx-2 relative flex items-center bg-[#03000a] border border-purple-900/30 hover:border-purple-500/40 focus-within:border-purple-500 rounded-full px-2 py-1.5 transition-all">
                       <input
                         type="text"
                         value={chatInputValue}
                         onChange={(e) => setChatInputValue(e.target.value)}
-                        onFocus={() => setIsKeyboardOpen(true)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             handleSendChatMessage();
                           }
                         }}
-                        placeholder="أرسل رسالة..."
-                        className="flex-grow bg-transparent text-[11px] px-2 py-0.5 text-slate-100 placeholder-slate-500 text-right outline-none w-full"
+                        placeholder="أرسل رسالة للمجلس..."
+                        className="flex-grow bg-transparent text-xs px-2 py-0.5 text-slate-100 placeholder-slate-500 text-right outline-none w-full"
                         dir="rtl"
                         id="chat-interactive-input"
                       />
-                      {chatInputValue.trim() ? (
-                        <button
-                          onClick={handleSendChatMessage}
-                          className="p-1 rounded-full bg-purple-600 hover:bg-purple-500 text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0"
-                          title="إرسال"
-                        >
-                          <Send className="w-3 h-3 transform rotate-180" />
-                        </button>
-                      ) : (
-                        isKeyboardOpen && (
-                          <button
-                            onClick={() => setIsKeyboardOpen(false)}
-                            className="text-[9px] text-slate-400 hover:text-white px-1.5 transition active:scale-90 shrink-0"
-                            title="إغلاق لوحة المفاتيح"
-                          >
-                            إغلاق
-                          </button>
-                        )
-                      )}
+                      <button
+                        onClick={handleSendChatMessage}
+                        className={`p-1.5 rounded-full text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 ${
+                          chatInputValue.trim() 
+                            ? 'bg-purple-600 hover:bg-purple-500' 
+                            : 'bg-slate-800 text-slate-500 hover:bg-slate-700'
+                        }`}
+                        title="إرسال"
+                        id="chat-send-btn"
+                      >
+                        <Send className="w-3.5 h-3.5 transform rotate-180" />
+                      </button>
                     </div>
 
                     {/* 3. Gift Selection Bottom Trigger 🎁 */}
@@ -1618,184 +1608,6 @@ export default function App() {
                       🎁
                     </button>
                   </div>
-
-                  {/* BEAUTIFUL VIRTUAL MOBILE KEYBOARD (Ar/En layout) */}
-                  {isKeyboardOpen && (
-                    <div className="bg-[#0b0718] border-t border-purple-500/20 px-2 py-3 z-30 select-none animate-slide-up shadow-[0_-8px_30px_rgb(0,0,0,0.8)] w-full">
-                      {/* Keyboard header / suggestion bar */}
-                      <div className="flex justify-between items-center text-[10px] text-slate-400 px-2 pb-2 mb-1 border-b border-purple-950/20">
-                        <button 
-                          onClick={() => setKeyboardLanguage(prev => prev === 'ar' ? 'en' : 'ar')}
-                          className="text-purple-300 hover:text-white font-bold bg-purple-950/40 px-2 py-0.5 rounded border border-purple-500/20 active:scale-95 transition"
-                        >
-                          {keyboardLanguage === 'ar' ? 'English (US)' : 'العربية'}
-                        </button>
-                        <div className="flex gap-2 text-[9px] text-slate-500 font-medium">
-                          <span className="hover:text-purple-300 cursor-pointer" onClick={() => setChatInputValue(p => p + 'السلام عليكم')}>السلام عليكم</span>
-                          <span>|</span>
-                          <span className="hover:text-purple-300 cursor-pointer" onClick={() => setChatInputValue(p => p + 'مرحباً بالمجلس')}>مرحباً بالمجلس</span>
-                          <span>|</span>
-                          <span className="hover:text-purple-300 cursor-pointer" onClick={() => setChatInputValue(p => p + 'حياكم الله')}>حياكم الله</span>
-                        </div>
-                        <button 
-                          onClick={() => setIsKeyboardOpen(false)}
-                          className="text-[10px] text-red-400 hover:text-red-300 font-bold active:scale-90 transition px-1"
-                        >
-                          إغلاق ×
-                        </button>
-                      </div>
-
-                      {/* Keys container */}
-                      <div className="space-y-1.5" dir="ltr">
-                        {keyboardLanguage === 'ar' ? (
-                          <>
-                            {/* Row 1 */}
-                            <div className="flex justify-center gap-1">
-                              {['ض', 'ص', 'ث', 'ق', 'ف', 'غ', 'ع', 'هـ', 'خ', 'ح', 'ج', 'د'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 max-w-[24px] h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-[11px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                            </div>
-                            {/* Row 2 */}
-                            <div className="flex justify-center gap-1 pl-2">
-                              {['ش', 'س', 'ي', 'ب', 'ل', 'ا', 'ت', 'ن', 'م', 'ك', 'ط'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 max-w-[26px] h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-[11px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                            </div>
-                            {/* Row 3 */}
-                            <div className="flex justify-center gap-1">
-                              <button
-                                onClick={() => setKeyboardLanguage('en')}
-                                className="px-1.5 h-8 rounded bg-[#2e1d5a] hover:bg-purple-950 text-[9px] font-bold text-purple-300 flex items-center justify-center active:scale-90 transition uppercase"
-                              >
-                                En
-                              </button>
-                              {['ئ', 'ء', 'ؤ', 'ر', 'لا', 'ى', 'ة', 'و', 'ز', 'ظ'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 max-w-[24px] h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-[11px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                              <button
-                                onClick={() => setChatInputValue(p => p.slice(0, -1))}
-                                className="px-1.5 h-8 rounded bg-red-950 hover:bg-red-900 text-[10px] font-bold text-red-300 flex items-center justify-center active:scale-90 transition"
-                                title="مسح"
-                              >
-                                ⌫
-                              </button>
-                            </div>
-                            {/* Row 4 */}
-                            <div className="flex gap-1 justify-between px-1 mt-1">
-                              <button
-                                onClick={() => setChatInputValue(p => p + '؟')}
-                                className="w-10 h-8 rounded bg-[#1b1235] text-[11px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                              >
-                                ؟
-                              </button>
-                              <button
-                                onClick={() => setChatInputValue(p => p + ' ')}
-                                className="flex-grow h-8 rounded bg-[#271b4a] hover:bg-[#342461] text-xs font-bold text-purple-200 flex items-center justify-center active:scale-90 transition"
-                              >
-                                مسافة Space
-                              </button>
-                              <button
-                                onClick={handleSendChatMessage}
-                                className="w-16 h-8 rounded bg-purple-600 hover:bg-purple-500 text-[10px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                              >
-                                إرسال
-                              </button>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            {/* Row 1 */}
-                            <div className="flex justify-center gap-1">
-                              {['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-xs font-semibold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                            </div>
-                            {/* Row 2 */}
-                            <div className="flex justify-center gap-1 pl-2">
-                              {['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-xs font-semibold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                            </div>
-                            {/* Row 3 */}
-                            <div className="flex justify-center gap-1">
-                              <button
-                                onClick={() => setKeyboardLanguage('ar')}
-                                className="px-1.5 h-8 rounded bg-[#2e1d5a] hover:bg-purple-950 text-[9px] font-bold text-purple-300 flex items-center justify-center active:scale-90 transition"
-                              >
-                                ع
-                              </button>
-                              {['z', 'x', 'c', 'v', 'b', 'n', 'm'].map(key => (
-                                <button
-                                  key={key}
-                                  onClick={() => setChatInputValue(p => p + key)}
-                                  className="flex-1 h-8 rounded bg-[#1b1235] hover:bg-[#281c4c] text-xs font-semibold text-white flex items-center justify-center active:scale-90 transition"
-                                >
-                                  {key}
-                                </button>
-                              ))}
-                              <button
-                                onClick={() => setChatInputValue(p => p.slice(0, -1))}
-                                className="px-1.5 h-8 rounded bg-red-950 hover:bg-red-900 text-xs font-bold text-red-300 flex items-center justify-center active:scale-90 transition"
-                              >
-                                ⌫
-                              </button>
-                            </div>
-                            {/* Row 4 */}
-                            <div className="flex gap-1 justify-between px-1 mt-1">
-                              <button
-                                onClick={() => setChatInputValue(p => p + '?')}
-                                className="w-10 h-8 rounded bg-[#1b1235] text-xs font-bold text-white flex items-center justify-center active:scale-90 transition"
-                              >
-                                ?
-                              </button>
-                              <button
-                                onClick={() => setChatInputValue(p => p + ' ')}
-                                className="flex-grow h-8 rounded bg-[#271b4a] hover:bg-[#342461] text-xs font-bold text-purple-200 flex items-center justify-center active:scale-90 transition"
-                              >
-                                Space
-                              </button>
-                              <button
-                                onClick={handleSendChatMessage}
-                                className="w-16 h-8 rounded bg-purple-600 hover:bg-purple-500 text-[10px] font-bold text-white flex items-center justify-center active:scale-90 transition"
-                              >
-                                Send
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Seat Actions Modal sheet (when selectedSeatIndex is active) */}
                   {selectedSeatIndex !== null && (
