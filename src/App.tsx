@@ -96,6 +96,281 @@ export default function App() {
   const [transferSuccess, setTransferSuccess] = useState(false);
   const [transferErrorMsg, setTransferErrorMsg] = useState('');
 
+  const wsRef = useRef<WebSocket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+
+  // Dynamic DB state fetching
+  const fetchDbStates = async () => {
+    try {
+      const usersRes = await fetch('/api/users');
+      if (usersRes.ok) {
+        const usersData = await usersRes.json();
+        setUsers(usersData);
+        if (currentUser) {
+          const matchedUser = usersData.find((u: any) => u.id === currentUser.id);
+          if (matchedUser) {
+            setCurrentUser(matchedUser);
+          }
+        }
+      }
+
+      const roomsRes = await fetch('/api/rooms');
+      if (roomsRes.ok) {
+        const roomsData = await roomsRes.json();
+        setRooms(roomsData);
+        if (activeRoom) {
+          const matchedRoom = roomsData.find((r: any) => r.id === activeRoom.id);
+          if (matchedRoom) {
+            setActiveRoom(matchedRoom);
+          }
+        }
+      }
+
+      const txRes = await fetch('/api/transactions');
+      if (txRes.ok) {
+        const txData = await txRes.json();
+        setTransactions(txData);
+      }
+
+      const agentRes = await fetch('/api/agent/balance');
+      if (agentRes.ok) {
+        const agentData = await agentRes.json();
+        setAgentBalance(agentData.balance);
+      }
+    } catch (e) {
+      console.error('Error fetching database states:', e);
+    }
+  };
+
+  // Run on mount and keep polling (fallback/sync)
+  useEffect(() => {
+    fetchDbStates();
+    const interval = setInterval(fetchDbStates, 5000);
+    return () => clearInterval(interval);
+  }, [currentUser?.id, activeRoom?.id]);
+
+  // Play incoming voice stream audio via Web Audio API
+  const playAudioChunk = (speakerId: string, pcmData: number[]) => {
+    if (speakerId === currentUser?.id) return;
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!(window as any).sharedAudioContext) {
+        (window as any).sharedAudioContext = new AudioContextClass();
+      }
+      const ctx = (window as any).sharedAudioContext;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+      
+      const buffer = ctx.createBuffer(1, pcmData.length, ctx.sampleRate || 44100);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < pcmData.length; i++) {
+        channel[i] = pcmData[i];
+      }
+      
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start();
+
+      // Trigger speaking wave indicator on seat
+      if (activeRoom) {
+        const seatIdx = activeRoom.seats.findIndex(s => s.userId === speakerId);
+        if (seatIdx !== -1) {
+          setSpeakingSeatIndex(seatIdx);
+          if (!(window as any).speakingTimers) (window as any).speakingTimers = {};
+          if ((window as any).speakingTimers[speakerId]) {
+            clearTimeout((window as any).speakingTimers[speakerId]);
+          }
+          (window as any).speakingTimers[speakerId] = setTimeout(() => {
+            setSpeakingSeatIndex(null);
+          }, 450);
+        }
+      }
+    } catch (e) {
+      // Audio auto-play block bypass
+    }
+  };
+
+  // Microphone capture and streaming over WebSocket
+  const startVoiceCapture = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn("Microphone API is not supported in this browser.");
+        return;
+      }
+      stopVoiceCapture();
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioContextClass();
+      audioContextRef.current = audioContext;
+      
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(2048, 1, 1);
+      processorRef.current = processor;
+      
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            action: 'audio_chunk',
+            roomId: activeRoom?.id,
+            userId: currentUser?.id,
+            userName: currentUser?.name,
+            audioData: Array.from(inputData)
+          }));
+        }
+      };
+      console.log("Real-time voice stream active!");
+    } catch (err) {
+      console.error("Failed to capture microphone voice stream:", err);
+    }
+  };
+
+  const stopVoiceCapture = () => {
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+  };
+
+  // WebSocket lifecycle listener
+  useEffect(() => {
+    if (!activeRoom || !currentUser) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('Real-time synchronization connected!');
+      ws.send(JSON.stringify({
+        action: 'join',
+        roomId: activeRoom.id,
+        userId: currentUser.id,
+        userName: currentUser.name
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'seats_changed') {
+          setActiveRoom(prev => prev ? { ...prev, seats: data.seats } : null);
+          setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, seats: data.seats } : r));
+        }
+
+        else if (data.type === 'new_chat_message') {
+          setRoomMessages(prev => [
+            ...prev,
+            {
+              sender: data.senderName,
+              text: data.text,
+              color: data.senderId === currentUser.id ? 'text-amber-400' : 'text-purple-300 font-medium',
+              type: 'chat'
+            }
+          ]);
+        }
+
+        else if (data.type === 'system_message') {
+          setRoomMessages(prev => [
+            ...prev,
+            {
+              sender: 'نظام المجلس',
+              text: data.text,
+              color: 'text-purple-400 font-bold',
+              type: 'system'
+            }
+          ]);
+        }
+
+        else if (data.type === 'gift_received') {
+          spawnFloatingGift(data.gift.icon);
+          setRoomMessages(prev => [
+            ...prev,
+            {
+              sender: data.senderName,
+              text: `أرسل هدية فاخرة: [ ${data.gift.arabicName} ${data.gift.icon} ] للمجلس! 🌟`,
+              color: 'text-amber-400 font-extrabold animate-pulse',
+              type: 'chat'
+            }
+          ]);
+          fetchDbStates();
+        }
+
+        else if (data.type === 'agent_balance_update') {
+          setAgentBalance(data.agentBalance);
+          setTransactions(data.transactions);
+          if (currentUser.id === data.targetUserId) {
+            setCurrentUser(prev => prev ? { ...prev, coins: data.targetUserCoins } : null);
+          }
+          fetchDbStates();
+        }
+
+        else if (data.type === 'audio_stream') {
+          playAudioChunk(data.userId, data.audioData);
+        }
+      } catch (err) {
+        console.error('WebSocket parsing error:', err);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('Real-time synchronization closed');
+    };
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [activeRoom?.id, currentUser?.id]);
+
+  // Voice capture effect
+  useEffect(() => {
+    if (currentScreen !== 'room' || !activeRoom || !currentUser) {
+      stopVoiceCapture();
+      return;
+    }
+
+    const userSeat = activeRoom.seats.find(s => s.userId === currentUser.id);
+    const isMuted = userSeat ? userSeat.isMuted : true;
+
+    if (userSeat && !isMuted) {
+      startVoiceCapture();
+    } else {
+      stopVoiceCapture();
+    }
+
+    return () => stopVoiceCapture();
+  }, [currentScreen, activeRoom?.seats, currentUser?.id]);
+
+  // Relocated states to the top of the App component to prevent block-scoped reference errors.
+
   // Architectural Explorer States
   const [selectedFileKey, setSelectedFileKey] = useState<string>('pubspec');
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
@@ -309,29 +584,32 @@ export default function App() {
   };
 
   // Setup initial user levels or auto welcomes
-  const handleSignUpAndLogin = (nameToUse: string) => {
+  const handleSignUpAndLogin = async (nameToUse: string) => {
     const finalName = nameToUse.trim() || 'فارس الأصيل';
-    // Check if user already exists
-    const existing = users.find(u => u.name === finalName);
-    if (existing) {
-      setCurrentUser(existing);
-      setCurrentScreen('explore');
-    } else {
-      // Create new user with 10 coins WELCOME BONUS
-      const newUser: AppUser = {
-        id: (1000 + users.length + 1).toString(),
-        name: finalName,
-        avatar: `https://images.unsplash.com/photo-${1500000000000 + Math.floor(Math.random() * 1000000)}?auto=format&fit=crop&q=80&w=120`,
-        level: 1,
-        coins: INITIAL_GIFT_BALANCE, // Auto credited 10 coins Welcome Bonus!
-        xp: 0
-      };
-      setUsers(prev => [...prev, newUser]);
-      setCurrentUser(newUser);
-      setCurrentScreen('explore');
-      // Toast notification for user
-      alert(`مرحباً بك في صدى العرب! تم منحك هدية ترحيبية بقيمة ${INITIAL_GIFT_BALANCE} كوينز مجانية 🪙`);
+    // Generate simple stable numeric ID based on name or hash
+    const userId = (Math.abs(finalName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 900) + 1000;
+    const finalId = userId.toString();
+
+    try {
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: finalId,
+          name: finalName,
+          coins: 10 // 10 coins welcome bonus
+        })
+      });
+      if (response.ok) {
+        const loggedUser = await response.json();
+        setCurrentUser(loggedUser);
+        setCurrentScreen('explore');
+        await fetchDbStates();
+      }
+    } catch (e) {
+      console.error('Error during login:', e);
     }
+
     // Clean input fields
     setCustomName('');
     setPhoneNumber('');
@@ -407,6 +685,15 @@ export default function App() {
         const updatedRoom = { ...activeRoom, seats: updatedSeats };
         setActiveRoom(updatedRoom);
         setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
+
+        // Real-time synchronization broadcast
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            action: 'seats_update',
+            roomId: activeRoom.id,
+            seats: updatedSeats
+          }));
+        }
       }
     }
   };
@@ -435,6 +722,15 @@ export default function App() {
     setActiveRoom(updatedRoom);
     setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
     setSelectedSeatIndex(null);
+
+    // Real-time synchronization broadcast
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        action: 'seats_update',
+        roomId: activeRoom.id,
+        seats: updatedSeats
+      }));
+    }
   };
 
   // Sending virtual premium gifts
@@ -446,75 +742,42 @@ export default function App() {
       return;
     }
 
-    // Deduct coins and award XP to sender
-    const currentXp = currentUser.xp + gift.xpReward;
-    const currentLevel = currentUser.level;
-    const nextLevelXp = getXpForNextUserLevel(currentLevel);
-    let newLevel = currentLevel;
-    let newXp = currentXp;
-
-    if (currentXp >= nextLevelXp) {
-      newLevel = currentLevel + 1;
-      newXp = currentXp - nextLevelXp;
+    // Process via WebSocket to ensure authoritative database deduction and live broadcasting
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        action: 'send_gift',
+        roomId: activeRoom.id,
+        userId: currentUser.id,
+        gift
+      }));
     }
-
-    const updatedUser = {
-      ...currentUser,
-      coins: currentUser.coins - gift.cost,
-      xp: newXp,
-      level: newLevel
-    };
-
-    setCurrentUser(updatedUser);
-    setUsers(users.map(u => u.id === currentUser.id ? updatedUser : u));
-
-    // Update Room Level & XP
-    const roomXp = activeRoom.xp + gift.xpReward;
-    const roomLevel = activeRoom.level;
-    const nextRoomXp = getXpForNextRoomLevel(roomLevel);
-    let newRoomLevel = roomLevel;
-    let newRoomXp = roomXp;
-
-    if (roomXp >= nextRoomXp) {
-      newRoomLevel = roomLevel + 1;
-      newRoomXp = roomXp - nextRoomXp;
-    }
-
-    const updatedRoom = {
-      ...activeRoom,
-      xp: newRoomXp,
-      level: newRoomLevel
-    };
-    setActiveRoom(updatedRoom);
-    setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
-
-    // Append gift announcement to live room chat
-    setRoomMessages(prev => [
-      ...prev,
-      {
-        sender: currentUser.name,
-        text: `أرسل هدية فاخرة: [ ${gift.arabicName} ${gift.icon} ] لدعم المجلس! 🌟`,
-        color: 'text-amber-400 font-extrabold animate-pulse',
-        type: 'chat'
-      }
-    ]);
-
-    // Spawn animated floating gift
-    spawnFloatingGift(gift.icon);
   };
 
   const handleSendChatMessage = () => {
     if (!chatInputValue.trim()) return;
-    setRoomMessages(prev => [
-      ...prev,
-      {
-        sender: currentUser ? currentUser.name : 'مجهول',
-        text: chatInputValue.trim(),
-        color: 'text-amber-400',
-        type: 'chat'
-      }
-    ]);
-    setChatInputValue('');
+    
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        action: 'chat_message',
+        roomId: activeRoom.id,
+        userId: currentUser?.id,
+        userName: currentUser?.name,
+        text: chatInputValue.trim()
+      }));
+      setChatInputValue('');
+    } else {
+      // Local fallback
+      setRoomMessages(prev => [
+        ...prev,
+        {
+          sender: currentUser ? currentUser.name : 'مجهول',
+          text: chatInputValue.trim(),
+          color: 'text-amber-400',
+          type: 'chat'
+        }
+      ]);
+      setChatInputValue('');
+    }
   };
 
   // Agent Dashboard logic: User Search
@@ -553,38 +816,32 @@ export default function App() {
       return;
     }
 
-    // Process Transfer
-    setAgentBalance(prev => prev - amount);
-    
-    // Credit recipient user
-    const updatedUsers = users.map(u => {
-      if (u.id === transferTargetUser.id) {
-        const updated = { ...u, coins: u.coins + amount };
-        if (currentUser && currentUser.id === u.id) {
-          setCurrentUser(updated);
-        }
-        return updated;
+    // Process Transfer on the backend REST API
+    fetch('/api/agent/transfer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetUserId: transferTargetUser.id,
+        amount: amount,
+        pin: transferPin
+      })
+    })
+    .then(res => {
+      if (!res.ok) {
+        return res.json().then(data => { throw new Error(data.error || 'فشل التحويل'); });
       }
-      return u;
+      return res.json();
+    })
+    .then(async () => {
+      setTransferSuccess(true);
+      setTransferAmount('');
+      setTransferPin('');
+      setTransferTargetId('');
+      await fetchDbStates(); // Pull fresh database updates
+    })
+    .catch(err => {
+      setTransferErrorMsg(err.message || 'حدث خطأ غير متوقع أثناء إرسال الكوينز');
     });
-    setUsers(updatedUsers);
-
-    // Create Transfer log
-    const newTx: AgentTransferLog = {
-      id: `tx_${Date.now()}`,
-      senderId: '9999',
-      senderName: 'الوكيل المعتمد لصدى العرب',
-      receiverId: transferTargetUser.id,
-      receiverName: transferTargetUser.name,
-      amount: amount,
-      timestamp: new Date().toISOString()
-    };
-    setTransactions([newTx, ...transactions]);
-
-    setTransferSuccess(true);
-    setTransferAmount('');
-    setTransferPin('');
-    setTransferTargetId('');
   };
 
   // Folder tree toggle
@@ -1326,6 +1583,13 @@ export default function App() {
                         20% { opacity: 1; transform: translate(-50%, -20px) scale(1.2); }
                         100% { transform: translate(-50%, -160px) scale(0.8); opacity: 0; }
                       }
+                      @keyframes chatSlideUp {
+                        0% { transform: translateY(18px) scale(0.93); opacity: 0; filter: blur(2px); }
+                        100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
+                      }
+                      .animate-chat-slide-up {
+                        animation: chatSlideUp 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+                      }
                     `}</style>
                   </div>
 
@@ -1387,7 +1651,7 @@ export default function App() {
                   </div>
 
                   {/* Main Content: 9-Seat Interactive Virtual Stage */}
-                  <div className="flex-grow p-4 overflow-y-auto flex flex-col justify-between">
+                  <div className="flex-grow p-4 overflow-y-auto flex flex-col justify-between relative pb-24">
                     
                     {/* Level Progress Indicator */}
                     <div className="bg-[#120c24]/80 p-2 rounded-lg border border-purple-500/10 flex justify-between items-center text-[10px] text-slate-400 mb-2">
@@ -1533,20 +1797,29 @@ export default function App() {
 
                     </div>
 
-                    {/* Live Arabic Council Chat Feed - Premium Native Simulation */}
-                    <div className="mt-4 bg-[#120c24]/30 p-2.5 rounded-xl border border-purple-500/10 flex flex-col space-y-1.5 text-[10px]" dir="rtl">
-                      <div className="flex justify-between items-center border-b border-purple-950/20 pb-1">
-                        <span className="text-purple-300 font-bold">💬 الدردشة والمجلس:</span>
-                        <span className="text-[8px] text-amber-400 font-bold">نشط الآن</span>
-                      </div>
+                    {/* Live Arabic Council Chat Feed - Premium Floating Transparent Overlay */}
+                    <div className="absolute bottom-2 right-4 left-4 h-[110px] pointer-events-none z-20 flex flex-col justify-end overflow-hidden" dir="rtl">
                       <div 
-                        className="text-slate-300 max-h-[100px] overflow-y-auto space-y-1.5 scrollbar-thin text-right pr-1"
-                        style={{ direction: 'rtl', textAlign: 'right' }}
+                        ref={(el) => {
+                          if (el) {
+                            el.scrollTop = el.scrollHeight;
+                          }
+                        }}
+                        className="overflow-y-auto space-y-1.5 scrollbar-none text-right pr-1 flex flex-col justify-end"
+                        style={{ 
+                          direction: 'rtl', 
+                          textAlign: 'right',
+                          WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,1) 40%, rgba(0,0,0,0) 100%)',
+                          maskImage: 'linear-gradient(to top, rgba(0,0,0,1) 40%, rgba(0,0,0,0) 100%)',
+                          height: '110px'
+                        }}
                       >
                         {roomMessages.map((msg, idx) => (
-                          <div key={idx} className="leading-relaxed">
-                            <span className={`${msg.color || 'text-amber-400'} font-bold`}>{msg.sender}:</span>{' '}
-                            <span className="text-slate-200">{msg.text}</span>
+                          <div key={idx} className="leading-relaxed animate-chat-slide-up">
+                            <div className="bg-black/50 backdrop-blur-xs px-2.5 py-1 rounded-xl inline-flex items-center gap-1.5 max-w-[90%] break-words">
+                              <span className={`${msg.color || 'text-amber-400'} font-black text-[10px]`}>{msg.sender}:</span>{' '}
+                              <span className="text-slate-100 text-[10px] font-medium">{msg.text}</span>
+                            </div>
                           </div>
                         ))}
                       </div>
