@@ -96,10 +96,7 @@ export default function App() {
   const [transferSuccess, setTransferSuccess] = useState(false);
   const [transferErrorMsg, setTransferErrorMsg] = useState('');
   
-  // Google sign-in modal states
-  const [showGoogleModal, setShowGoogleModal] = useState(false);
-  const [googleEmail, setGoogleEmail] = useState('karmo2931@gmail.com');
-  const [googleName, setGoogleName] = useState('');
+
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -1196,11 +1193,11 @@ export default function App() {
 
                         <div className="grid grid-cols-2 gap-2 pt-1">
                           <button
-                            onClick={() => setShowGoogleModal(true)}
+                            onClick={() => handleSignUpAndLogin('عبدالرحمن الخليجي')}
                             className="bg-slate-900 hover:bg-slate-800 border border-slate-800 py-2 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition"
                             id="login-btn-google"
                           >
-                            <span className="text-red-400 font-bold">G</span> Google Sign-In
+                            <span className="text-amber-400 font-bold">👤</span> دخول سريع
                           </button>
                           <button
                             onClick={() => handleSignUpAndLogin('بندر الفيصل')}
@@ -1334,80 +1331,6 @@ export default function App() {
                       <span className="text-white">{deviceInfo.modelName}</span>
                     </span>
                   </div>
-
-                  {/* Google Custom Authentication Modal Overlay */}
-                  {showGoogleModal && (
-                    <div className="absolute inset-0 bg-[#03000a]/95 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in" dir="rtl">
-                      <div className="bg-[#0b0819] border border-purple-500/20 rounded-2xl w-full max-w-[310px] p-5 shadow-2xl flex flex-col space-y-4 animate-chat-slide-up">
-                        
-                        {/* Header */}
-                        <div className="text-center space-y-1">
-                          <div className="flex justify-center items-center gap-0.5 text-xl font-black font-sans mb-1">
-                            <span className="text-[#4285F4]">G</span>
-                            <span className="text-[#EA4335]">o</span>
-                            <span className="text-[#FBBC05]">o</span>
-                            <span className="text-[#4285F4]">g</span>
-                            <span className="text-[#34A853]">l</span>
-                            <span className="text-[#EA4335]">e</span>
-                          </div>
-                          <h3 className="text-[11px] font-bold text-white">تسجيل الدخول الآمن باستخدام Google</h3>
-                          <p className="text-[9px] text-slate-400">تابع عملية المصادقة فوراً باسمك الخاص</p>
-                        </div>
-
-                        {/* Form Inputs */}
-                        <div className="space-y-3">
-                          <div>
-                            <label className="text-[9px] text-slate-400 block mb-1 text-right">عنوان البريد الإلكتروني (Google Email)</label>
-                            <input
-                              type="email"
-                              placeholder="your-email@gmail.com"
-                              value={googleEmail}
-                              onChange={(e) => setGoogleEmail(e.target.value)}
-                              className="w-full bg-[#03000a] border border-purple-500/10 rounded-lg p-2 text-xs text-left text-white"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="text-[9px] text-slate-400 block mb-1 text-right">الاسم المستعار المفضل في المجالس 👤</label>
-                            <input
-                              type="text"
-                              placeholder="أدخل اسمك الذي يظهر للجميع"
-                              value={googleName}
-                              onChange={(e) => setGoogleName(e.target.value)}
-                              className="w-full bg-[#03000a] border border-purple-500/20 rounded-lg p-2 text-xs text-right text-white focus:border-purple-500 outline-none"
-                            />
-                            <p className="text-[8px] text-purple-400 mt-1">سيتم حفظ هذا الاسم ليكون هويتك في جميع الغرف والدردشات.</p>
-                          </div>
-                        </div>
-
-                        {/* Interactive Action Buttons */}
-                        <div className="flex gap-2 pt-1">
-                          <button
-                            onClick={async () => {
-                              const finalName = googleName.trim() || 'فارس غوغل';
-                              await handleSignUpAndLogin(finalName);
-                              setShowGoogleModal(false);
-                            }}
-                            className="flex-grow bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-lg text-[10px] transition"
-                          >
-                            تأكيد ودخول 🚀
-                          </button>
-                          <button
-                            onClick={() => setShowGoogleModal(false)}
-                            className="bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold px-3 py-2 rounded-lg text-[10px] transition"
-                          >
-                            إلغاء
-                          </button>
-                        </div>
-
-                        {/* Policy Footnote */}
-                        <p className="text-[7.5px] text-center text-slate-500 leading-relaxed">
-                          يتصل هذا التطبيق ببوابة Google الآمنة. بالتسجيل أنت توافق على شروط خصوصية صدى العرب.
-                        </p>
-
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 
