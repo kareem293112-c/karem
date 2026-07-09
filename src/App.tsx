@@ -123,6 +123,43 @@ export default function App() {
   const [agoraPacketLoss, setAgoraPacketLoss] = useState(0.0); // %
   const [isAdminDrawerOpen, setIsAdminDrawerOpen] = useState(false);
   const [selectedGift, setSelectedGift] = useState<Gift | null>(null);
+
+  // Dynamic Device Type Detection
+  const [deviceInfo, setDeviceInfo] = useState({ isMobile: false, platform: 'desktop', modelName: 'Desktop' });
+
+  useEffect(() => {
+    const ua = navigator.userAgent || navigator.vendor || (window as any).opera;
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream;
+    const isAndroid = /Android/i.test(ua);
+    const isMobile = isIOS || isAndroid || window.innerWidth < 768;
+    
+    let modelName = 'جهاز كمبيوتر (Desktop)';
+    if (isIOS) {
+      if (/iPhone/.test(ua)) {
+        modelName = 'آيفون (iPhone)';
+      } else if (/iPad/.test(ua)) {
+        modelName = 'آيباد (iPad)';
+      } else {
+        modelName = 'جهاز Apple iOS';
+      }
+    } else if (isAndroid) {
+      if (/Samsung|SM-|SAMSUNG/i.test(ua)) {
+        modelName = 'سامسونج (Samsung)';
+      } else if (/Huawei|HUAWEI/i.test(ua)) {
+        modelName = 'هواوي (Huawei)';
+      } else if (/Xiaomi|Redmi|MI/i.test(ua)) {
+        modelName = 'شاومي (Xiaomi)';
+      } else {
+        modelName = 'أندرويد (Android)';
+      }
+    }
+
+    setDeviceInfo({
+      isMobile,
+      platform: isIOS ? 'ios' : isAndroid ? 'android' : 'desktop',
+      modelName
+    });
+  }, []);
   
   // Interactive Arabic Room Live Chat messages & Input State
   const [chatInputValue, setChatInputValue] = useState('');
@@ -618,7 +655,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-4 relative overflow-hidden" id="root-container">
+    <div className="min-h-screen bg-[#03000a] text-slate-200 flex flex-col items-center justify-center p-0 md:p-4 relative overflow-hidden" id="root-container">
       {/* Ambient background glows */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-900/10 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-[#7C3AED]/10 rounded-full blur-[150px] pointer-events-none"></div>
@@ -838,23 +875,27 @@ export default function App() {
 
         </div>
 
-        {/* RIGHT COLUMN: Interactive Smartphone Simulator Container (5 Cols) */}
-        <div className="flex flex-col items-center justify-center w-full" id="phone-simulator-container">
+        {/* RIGHT COLUMN: Interactive Smartphone Simulator Container (Adapts perfectly to actual mobile devices) */}
+        <div className="flex flex-col items-center justify-center w-full min-h-screen md:min-h-0" id="phone-simulator-container">
 
-          {/* Device Shell (Premium iPhone Shape) */}
-          <div className="relative w-[360px] h-[720px] bg-slate-950 rounded-[48px] border-[10px] border-slate-800 shadow-2xl overflow-hidden ring-4 ring-purple-900/30 flex flex-col font-sans" id="smartphone-device">
+          {/* Device Shell - Becomes fully borderless & adapts to real mobile width/edges */}
+          <div className="relative w-full md:max-w-md min-h-screen md:min-h-[820px] md:max-h-[92vh] bg-[#03000a] md:rounded-3xl md:border md:border-purple-500/15 md:shadow-[0_0_60px_rgba(124,58,237,0.12)] flex flex-col font-sans overflow-hidden" id="smartphone-device">
             
-            {/* Top Notch / Dynamic Island Simulation */}
-            <div className="absolute top-1 left-1/2 -translate-x-1/2 w-28 h-5.5 bg-black rounded-full z-50 flex items-center justify-between px-2.5 border border-slate-800/80 shadow-inner">
-              <div className="w-1.5 h-1.5 bg-[#0e1726] rounded-full"></div>
-              <div className="w-8 h-1 bg-slate-900 rounded-full opacity-60"></div>
-              <div className="w-1.5 h-1.5 bg-slate-950 rounded-full border border-purple-900/40 relative flex items-center justify-center">
-                <div className="w-0.5 h-0.5 bg-blue-500 rounded-full animate-pulse"></div>
+            {/* Top Notch / Dynamic Island Simulation (Only on Desktop preview mode) */}
+            {!deviceInfo.isMobile && (
+              <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-28 h-5.5 bg-black rounded-full z-50 flex items-center justify-between px-2.5 border border-slate-800/80 shadow-inner">
+                <div className="w-1.5 h-1.5 bg-[#0e1726] rounded-full"></div>
+                <div className="w-8 h-1 bg-slate-900 rounded-full opacity-60"></div>
+                <div className="w-1.5 h-1.5 bg-slate-950 rounded-full border border-purple-900/40 relative flex items-center justify-center">
+                  <div className="w-0.5 h-0.5 bg-blue-500 rounded-full animate-pulse"></div>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Simulated Status Bar (Safe Area Padding Adjusted) */}
-            <div className="bg-slate-950 text-white text-[10px] px-5 pt-8 pb-2 flex justify-between items-center z-40 select-none font-mono border-b border-purple-950/10">
+            {/* Adaptive Smart Status Bar (Automatically shows your device info and adapts spacing) */}
+            <div className={`bg-slate-950/90 text-white text-[10px] px-5 pb-2.5 flex justify-between items-center z-40 select-none font-mono border-b border-purple-950/10 ${
+              deviceInfo.isMobile ? 'pt-4' : 'pt-8'
+            }`}>
               <span 
                 onClick={() => {
                   if (currentUser) {
@@ -869,7 +910,13 @@ export default function App() {
                 <span>{currentTime || '06:09 م'}</span>
                 <span className="text-[7px] text-purple-600/30">🛠️</span>
               </span>
+              
               <div className="flex items-center gap-1.5">
+                {/* Real-time Smartphone Detection Badge */}
+                <span className="text-[9px] bg-purple-950/80 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/25 font-bold tracking-wider flex items-center gap-1">
+                  <span>{deviceInfo.platform === 'ios' ? '' : deviceInfo.platform === 'android' ? '🤖' : '💻'}</span>
+                  <span>{deviceInfo.modelName}</span>
+                </span>
                 <span className="text-[8px] bg-purple-950 text-purple-300 px-1 rounded border border-purple-500/20 font-bold tracking-wider">5G</span>
                 <span className="w-4.5 h-2.5 border border-white/40 rounded-xs relative flex items-center p-0.5">
                   <span className="h-full w-5/6 bg-emerald-500 rounded-3xs animate-pulse"></span>
@@ -2159,10 +2206,12 @@ export default function App() {
 
             </div>
 
-            {/* Bottom Home Indicator Line */}
-            <div className="bg-slate-950 pb-3 flex justify-center items-center z-40 select-none">
-              <div className="w-28 h-1 bg-slate-700 rounded-full"></div>
-            </div>
+            {/* Bottom Home Indicator Line (Only on Desktop preview mode) */}
+            {!deviceInfo.isMobile && (
+              <div className="bg-slate-950 pb-3 flex justify-center items-center z-40 select-none">
+                <div className="w-28 h-1 bg-slate-700 rounded-full"></div>
+              </div>
+            )}
 
           </div>
 
