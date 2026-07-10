@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import AgoraRTC, { ILocalAudioTrack, IRemoteAudioTrack, IAgoraRTCClient } from 'agora-rtc-sdk-ng';
+
 import {
   Smartphone,
   Search,
@@ -54,11 +54,7 @@ import {
   exportPublicKey
 } from './lib/crypto';
 import {
-  SIMULATED_USERS,
-  INITIAL_ROOMS,
   GIFTS,
-  INITIAL_TRANSACTIONS,
-  FLUTTER_FOLDER_STRUCTURE,
   INITIAL_GIFT_BALANCE,
   getXpForNextUserLevel,
   getXpForNextRoomLevel
@@ -168,22 +164,19 @@ const padSeats = (seats: VoiceSeat[] | undefined | null): VoiceSeat[] => {
 
 export default function App() {
   // Global States representing Database
-  const [users, setUsers] = useState<AppUser[]>(SIMULATED_USERS);
+  const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
 
   const checkIfOwner = (room: VoiceRoom | null) => {
     if (!room || !currentUser) return false;
     return !!(
-      (room.owner_id && room.owner_id === currentUser.id) ||
-      (room.owner_id && room.owner_id === currentUser.name) ||
-      (room.hostName && room.hostName === currentUser.name) ||
-      (currentUser.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (room.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || room.hostName?.includes("ABDULKERIM") || room.name === "حلبي" || room.name === "ؤ"))
+      (room.owner_id && room.owner_id === currentUser.id)
     );
   };
-  const [rooms, setRooms] = useState<VoiceRoom[]>(INITIAL_ROOMS);
+  const [rooms, setRooms] = useState<VoiceRoom[]>([]);
   const [activeRoom, setActiveRoom] = useState<VoiceRoom | null>(null);
-  const [transactions, setTransactions] = useState<AgentTransferLog[]>(INITIAL_TRANSACTIONS);
-  const [agentBalance, setAgentBalance] = useState<number>(248350);
+  const [transactions, setTransactions] = useState<AgentTransferLog[]>([]);
+  const [agentBalance, setAgentBalance] = useState<number>(0);
   const [agentsHub, setAgentsHub] = useState<{agent_id: string; agent_name: string; contact_whatsapp: string; is_active: boolean}[]>([]);
 
   // Profile, Direct Messaging & Follower States
@@ -291,68 +284,9 @@ export default function App() {
     setE2eeAuditLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 49)]);
   };
 
-  // Agora RTC Real-Time Communication Engine States
-  const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null);
-  const [localAudioTrack, setLocalAudioTrack] = useState<ILocalAudioTrack | null>(null);
-  const [agoraLogs, setAgoraLogs] = useState<string[]>([]);
-  const [agoraRole, setAgoraRole] = useState<'ClientRoleAudience' | 'ClientRoleBroadcaster'>('ClientRoleAudience');
-  const [isMuted, setIsMuted] = useState(false);
 
-  const addAgoraLog = (msg: string) => {
-    const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setAgoraLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 29)]);
-  };
 
-  const initAgora = async (roomId: string) => {
-    if (!currentUser) return;
-    
-    // Create client
-    const client = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
-    setAgoraClient(client);
-    
-    // Remote track listener
-    client.on("user-published", async (user, mediaType) => {
-      await client.subscribe(user, mediaType);
-      if (mediaType === "audio") {
-        user.audioTrack?.play();
-      }
-    });
 
-    addAgoraLog(`جاري تهيئة محرك Agora RTC للغرفة الصوتية: ${roomId}`);
-    
-    try {
-      const response = await fetch('/api/auth/agora-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room_id: roomId, uid: Number(currentUser.id) || 1000 + Math.floor(Math.random() * 9000), is_speaker: false })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        await client.join(data.appId, roomId, data.token, data.uid);
-        addAgoraLog(`تم الانضمام للقناة: ${roomId}`);
-      } else {
-        throw new Error('فشل جلب توكن Agora من السيرفر');
-      }
-    } catch (e: any) {
-      addAgoraLog(`خطأ في تهيئة Agora RTC: ${e.message || e}`);
-    }
-  };
-
-  const stopAgora = async () => {
-    addAgoraLog(`إغلاق اتصال Agora ومغادرة القناة الصوتية.`);
-    if (localAudioTrack) {
-      localAudioTrack.stop();
-      localAudioTrack.close();
-      setLocalAudioTrack(null);
-    }
-    if (agoraClient) {
-      await agoraClient.leave();
-      setAgoraClient(null);
-    }
-    setAgoraRole('ClientRoleAudience');
-    setIsMuted(false);
-  };
 
 
 
@@ -818,52 +752,7 @@ export default function App() {
   const isVoiceCaptureActiveRef = useRef(false);
 
   // Microphone capture and streaming over WebSocket with Tencent TRTC GCC-Optimized Warm Standby
-  const startVoiceCapture = async () => {
-    if (!agoraClient) return;
-    
-    // Ensure we are connected before trying to publish
-    if (agoraClient.connectionState !== "CONNECTED") {
-      addAgoraLog(`[Agora RTC] لا يمكن بث الصوت حالياً: غير متصل بالخادم.`);
-      return;
-    }
 
-    try {
-      // Set role to host to allow publishing
-      await agoraClient.setClientRole("host");
-      setAgoraRole("ClientRoleBroadcaster");
-      
-      const track = await AgoraRTC.createMicrophoneAudioTrack();
-      setLocalAudioTrack(track);
-      await agoraClient.publish([track]);
-      
-      addAgoraLog(`[Agora RTC] تم تفعيل الميكروفون ونشر الصوت بنجاح.`);
-    } catch (err) {
-      console.error("Failed to capture microphone voice stream with Agora:", err);
-    }
-  };
-
-  const stopVoiceCapture = async (fullyReleaseHardware: boolean = false) => {
-    if (localAudioTrack) {
-        localAudioTrack.stop();
-        localAudioTrack.close();
-        setLocalAudioTrack(null);
-    }
-    
-    // If fully releasing, we can unpublish and potentially set role to audience
-    if (fullyReleaseHardware) {
-        if (agoraClient && agoraClient.connectionState === "CONNECTED") {
-            try {
-                await agoraClient.unpublish();
-            } catch(e) {
-                console.error("Error unpublishing:", e);
-            }
-            await agoraClient.setClientRole("audience");
-            setAgoraRole("ClientRoleAudience");
-        }
-    }
-    
-    addAgoraLog(`[Agora RTC] تم إيقاف الميكروفون ${fullyReleaseHardware ? '(إصدار كامل)' : '(وضع الاستعداد)'}.`);
-  };
 
   // Refs to avoid stale closures in WebSocket event handlers
   const activeRoomRef = useRef(activeRoom);
@@ -1058,64 +947,10 @@ export default function App() {
 
   // Voice capture effect
   useEffect(() => {
-    if (currentScreen !== 'room' || !activeRoom || !currentUser) {
-      stopVoiceCapture(true); // Fully release hardware on exit/unmount to save battery and secure privacy
-      return;
-    }
-
-    const userSeat = activeRoom.seats.find(s => s.userId === currentUser.id);
-    const isMuted = userSeat ? userSeat.isMuted : true;
-
-    if (userSeat && !isMuted) {
-      startVoiceCapture();
-    } else {
-      stopVoiceCapture(false); // Warm standby to prevent audio freeze
-    }
-
-    return () => stopVoiceCapture(false); // Warm standby during incremental react lifecycle ticks
+    // Agora/TRTC voice capture has been removed.
+    // Integrate ZegoCloud SDK here when needed.
   }, [currentScreen, activeRoom?.id, currentUser?.id, myCurrentSeatIndex, myCurrentSeatMuted]);
 
-  // Agora RTC Synchronization with Seat changes (Broadcaster / Audience role switching & mute)
-  useEffect(() => {
-    if (currentScreen !== 'room' || !activeRoom || !currentUser || !agoraClient) {
-      if (agoraClient && currentScreen !== 'room') {
-        stopAgora();
-      }
-      return;
-    }
-
-    const mySeat = activeRoom.seats.find(s => s.userId === currentUser.id);
-
-    if (mySeat) {
-      // User is on a seat -> ClientRoleBroadcaster role
-      if (agoraRole !== 'ClientRoleBroadcaster') {
-        addAgoraLog(`تحديث المقعد: تم كشف صعودك للمقعد رقم ${mySeat.index + 1}`);
-        addAgoraLog(`تغيير الدور إلى متحدث: client.setClientRole("ClientRoleBroadcaster")`);
-        addAgoraLog(`تفعيل المايك وبدء بث المسار الصوتي: localAudioTrack.setEnabled(true) & enableAudio()`);
-        
-        setAgoraRole('ClientRoleBroadcaster');
-        setIsMuted(mySeat.isMuted);
-      } else {
-        // Already Broadcaster, check mute state change
-        if (isMuted !== mySeat.isMuted) {
-          addAgoraLog(`تحديث إداري: تم ${mySeat.isMuted ? 'كتم (Mute)' : 'إلغاء كتم'} صوتك من قبل مالك المجلس.`);
-          addAgoraLog(`تطبيق كتم المايك: client.muteLocalAudioStream(${mySeat.isMuted})`);
-          
-          setIsMuted(mySeat.isMuted);
-        }
-      }
-    } else {
-      // User is not on a seat -> ClientRoleAudience role
-      if (agoraRole !== 'ClientRoleAudience') {
-        addAgoraLog(`تحديث المقعد: تم كشف نزولك من المقاعد الصوتية.`);
-        addAgoraLog(`إيقاف بث المايك والمسار الصوتي: localAudioTrack.setEnabled(false)`);
-        addAgoraLog(`إرجاع الدور إلى مستمع: client.setClientRole("ClientRoleAudience")`);
-        
-        setAgoraRole('ClientRoleAudience');
-        setIsMuted(false);
-      }
-    }
-  }, [currentScreen, activeRoom?.id, currentUser?.id, !!agoraClient, myCurrentSeatIndex, myCurrentSeatMuted]);
 
   // Relocated states to the top of the App component to prevent block-scoped reference errors.
 
@@ -1298,15 +1133,13 @@ export default function App() {
     e.target.value = '';
   };
 
-  // Native Mobile UI States (Agora RTC status, Bottom sheet draw lists)
+  // Native Mobile UI States (Bottom sheet draw lists)
   const [isGiftDrawerOpen, setIsGiftDrawerOpen] = useState(false);
-  const [isAgoraDrawerOpen, setIsAgoraDrawerOpen] = useState(false);
+
   const [isQueueDrawerOpen, setIsQueueDrawerOpen] = useState(false);
   const [isNoiseCancellation, setIsNoiseCancellation] = useState(true);
   const [isEchoCancellation, setIsEchoCancellation] = useState(true);
   const [isVoiceConnected, setIsVoiceConnected] = useState(true);
-  const [agoraLatency, setAgoraLatency] = useState(21); // ms
-  const [agoraPacketLoss, setAgoraPacketLoss] = useState(0.0); // %
   const [isAdminDrawerOpen, setIsAdminDrawerOpen] = useState(false);
   const [selectedGift, setSelectedGift] = useState<Gift | null>(null);
   const [selectedRecipientSeatIndex, setSelectedRecipientSeatIndex] = useState<number | 'all'>('all');
@@ -1516,7 +1349,7 @@ export default function App() {
       { sender: 'نظام المجلس', text: 'مرحباً بكم في صدى العرب! يرجى الالتزام بالاحترام المتبادل داخل مجالسنا الموقرة.', color: 'text-purple-400 font-bold', type: 'system' }
     ]);
     setCurrentScreen('room');
-    initAgora(room.id); // Initialize Agora RTC connection
+
     // Trigger entrance animation for high-level user
     if (currentUser && currentUser.level >= 10) {
       triggerVipEntrance(currentUser.name, currentUser.level);
@@ -2003,7 +1836,7 @@ export default function App() {
                     </li>
                     <li className="flex items-start gap-2">
                       <span className="text-cyan-400 font-bold">●</span>
-                      <span><strong className="text-slate-200">WebRtcVoiceService</strong>: طبقة تجريد تتيح تبديل محرك الصوت اللاسلكي بسهولة فائقة بين Agora.io و ZegoCloud دون تعديل واجهات التطبيق.</span>
+                      <span><strong className="text-slate-200">WebRtcVoiceService</strong>: طبقة تجريد تتيح محرك الصوت اللاسلكي ZegoCloud.</span>
                     </li>
                   </ul>
                 </div>
@@ -2098,7 +1931,7 @@ export default function App() {
                 <div className="bg-purple-950/20 p-4 rounded-xl border border-[#7C3AED]/30">
                   <h3 className="text-xs font-bold text-white mb-1">تكامل WebRTC للاتصال الصوتي فائق السرعة</h3>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    تم تضمين واجهة Service المجردة <code className="text-amber-300 font-mono">WebRtcVoiceService</code> للربط مع محركات البث العالمية مثل Agora.io أو ZegoCloud. يتميز هذا التجريد بتمكين التطبيق من إدارة جودة البث الصوتي وتتبع المتحدثين النشطين (Active Speakers) وإدارة جودة الصوت ثلاثي الأبعاد الموجه للمجالس الخليجية والعربية الكبرى.
+                    تم تضمين واجهة Service المجردة <code className="text-amber-300 font-mono">WebRtcVoiceService</code> للربط مع محرك البث ZegoCloud. يتميز هذا التجريد بتمكين التطبيق من إدارة جودة البث الصوتي وتتبع المتحدثين النشطين (Active Speakers) وإدارة جودة الصوت ثلاثي الأبعاد الموجه للمجالس الخليجية والعربية الكبرى.
                   </p>
                 </div>
               </div>
@@ -4106,12 +3939,10 @@ export default function App() {
                           setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
                           setActiveRoom(null);
                           setIsGiftDrawerOpen(false);
-                          setIsAgoraDrawerOpen(false);
                           setIsAdminDrawerOpen(false);
                           setIsQueueDrawerOpen(false);
                           setSelectedGift(null);
                           setCurrentScreen('explore');
-                          stopAgora(); // Stop Agora RTC session
                         }}
                         className="w-7 h-7 rounded-full bg-black/40 hover:bg-black/60 text-slate-300 hover:text-white flex items-center justify-center transition active:scale-90"
                         id="exit-room-btn"
@@ -5022,136 +4853,6 @@ export default function App() {
                   </>
                 )}
 
-                  {/* NATIVE AGORA & TENCENT TRTC RTC AUDIO CONNECTION & LOGS DRAWER */}
-                  {isAgoraDrawerOpen && (
-                    <>
-                      <div
-                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
-                        onClick={() => setIsAgoraDrawerOpen(false)}
-                      />
-                      <div className="absolute inset-x-0 bottom-0 bg-[#05030f]/98 backdrop-blur-xl border-t border-purple-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85vh] overflow-y-auto scrollbar-thin">
-                      <div className="flex justify-between items-center border-b border-purple-950/50 pb-2 mb-3">
-                        <button
-                          onClick={() => setIsAgoraDrawerOpen(false)}
-                          className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800 cursor-pointer"
-                        >
-                          إغلاق
-                        </button>
-                        <h4 className="text-xs font-bold text-white flex items-center gap-1.5 font-sans">
-                          🎙️ محرك البث وهندسة الصوت الخليجية (TRTC & Agora Global Engines)
-                        </h4>
-                      </div>
-
-                      {/* Engine Selection Status Indicator */}
-                      <div className="grid grid-cols-2 gap-2 mb-3 text-center">
-                        <div className="p-2.5 rounded-xl border border-emerald-500/40 bg-emerald-950/20 shadow-inner flex flex-col justify-center items-center">
-                          <span className="text-[9px] text-emerald-400 font-extrabold flex items-center gap-1">
-                            🟢 نشط ومفعل تلقائياً
-                          </span>
-                          <span className="text-[10px] text-white font-black mt-1">Tencent TRTC (GCC High-Speed)</span>
-                          <p className="text-[8px] text-slate-400 mt-0.5">البث المطور لمنطقة الخليج العربي</p>
-                        </div>
-                        <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-900/30 opacity-60 flex flex-col justify-center items-center">
-                          <span className="text-[9px] text-slate-400">متاح كخيار احتياطي</span>
-                          <span className="text-[10px] text-slate-300 font-bold mt-1">Agora.io RTC Core</span>
-                          <p className="text-[8px] text-slate-500 mt-0.5">الجيل القديم للبث الصوتي العام</p>
-                        </div>
-                      </div>
-
-                      {/* Tencent TRTC Architecture Parameters Panel */}
-                      <div className="p-3 bg-[#03000a] rounded-xl border border-purple-500/20 mb-3 space-y-2">
-                        <span className="text-[9px] text-purple-400 font-bold block border-b border-purple-950/55 pb-1">
-                          📐 إعدادات بث TRTC للتحكم في زمن الاستجابة (GCC Latency Control Rules):
-                        </span>
-                        
-                        <div className="flex justify-between items-center text-[9.5px]">
-                          <span className="text-slate-400">تجنب تعليق المايك بالهواتف (No Audio Freeze):</span>
-                          <span className="text-emerald-400 font-bold">مفعّل (switchRole فقط دون stopLocalAudio)</span>
-                        </div>
-                        <div className="flex justify-between items-center text-[9.5px]">
-                          <span className="text-slate-400">كود السيناريو الافتراضي (TRTC App Scene):</span>
-                          <code className="text-amber-300 font-mono font-bold">TRTCAppSceneVoiceChatRoom</code>
-                        </div>
-                        <div className="flex justify-between items-center text-[9.5px]">
-                          <span className="text-slate-400">مستوى جودة الصوت (Audio Quality Level):</span>
-                          <code className="text-blue-300 font-mono font-bold">TRTCAudioQualityDefault (16kHz Downsampled)</code>
-                        </div>
-                        <div className="flex justify-between items-center text-[9.5px]">
-                          <span className="text-slate-400">نوع نظام الصوت الموحد (System Volume Type):</span>
-                          <code className="text-fuchsia-300 font-mono font-bold">TRTCSystemVolumeTypeAuto (تفاعلي تلقائي)</code>
-                        </div>
-                        <div className="flex justify-between items-center text-[9.5px]">
-                          <span className="text-slate-400">تقييم النبضات الفوري (Volume Indication):</span>
-                          <code className="text-cyan-300 font-mono font-bold">enableAudioVolumeEvaluation(200ms)</code>
-                        </div>
-                      </div>
-
-                      {/* Server Status Header */}
-                      <div className="p-3 bg-[#03000a] rounded-xl border border-blue-500/20 mb-3 space-y-1.5">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400">حالة الاتصال بالبث السحابي:</span>
-                          <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                            🟢 متصل وآمن عبر Tencent TRTC GCC Cluster
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400">اسم الغرفة السحابية (Room ID):</span>
-                          <span className="text-[10px] text-blue-300 font-mono font-bold">{activeRoom?.id || "N/A"}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400">صلاحية المستخدم الحالية (Role):</span>
-                          <span className="text-[10px] text-amber-400 font-bold">
-                            {agoraRole === 'ClientRoleBroadcaster' ? '🎙️ مذيع مع بث نشط (TRTCRoleAnchor)' : '🎧 مستمع صامت (TRTCRoleAudience)'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Technical latency parameters */}
-                      <div className="grid grid-cols-2 gap-2 mb-3">
-                        <div className="p-2 bg-[#03000a] rounded-lg border border-purple-500/10">
-                          <span className="text-[9px] text-slate-400 block mb-0.5">زمن الاستجابة للشبكة (TRTC Latency):</span>
-                          <span className="text-xs font-mono font-black text-emerald-400">12ms (GCC Hyper-Low Latency)</span>
-                        </div>
-                        <div className="p-2 bg-[#03000a] rounded-lg border border-purple-500/10">
-                          <span className="text-[9px] text-slate-400 block mb-0.5">معدل نقل الباقة (Sample Rate):</span>
-                          <span className="text-xs font-bold text-amber-400 font-mono">16000 Hz (Optimal Speech)</span>
-                        </div>
-                      </div>
-
-                      {/* Live TRTC Web SDK Logger Terminal */}
-                      <div className="mb-3">
-                        <span className="text-[9px] text-slate-400 block mb-1">سجل استدعاءات Tencent TRTC SDK الحية ومؤشرات الصوت:</span>
-                        <div className="bg-black/80 rounded-xl p-2.5 border border-purple-950/60 h-28 overflow-y-auto font-mono text-[9.5px] space-y-1 scrollbar-thin scrollbar-thumb-purple-900 select-all" dir="ltr">
-                          {agoraLogs.length === 0 ? (
-                            <p className="text-slate-600 italic text-center pt-8">لا يوجد استدعاءات نشطة حالياً</p>
-                          ) : (
-                            agoraLogs.map((log, index) => (
-                              <p key={index} className="text-cyan-400 text-left leading-normal border-b border-white/5 pb-0.5">
-                                {log}
-                              </p>
-                            ))
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Micro-Actions to simulate Agora events */}
-                      <div className="space-y-2 border-t border-purple-950/40 pt-3 mb-1">
-                        <div className="flex justify-between items-center p-2 bg-[#03000a]/60 rounded-lg">
-                          <span className="text-[10px] text-slate-300">محاكاة اختبار جودة الصوت المحلي لتطبيق الخليج (GCC Mic Diagnostics)</span>
-                          <button
-                            onClick={() => {
-                              addAgoraLog("[TRTC Cloud] startMicDeviceTest() - جاري فحص استقرار الميكروفون المحلي على الهاتف...");
-                              setTimeout(() => addAgoraLog("[TRTC Cloud] startMicDeviceTest() - انتهى الفحص بنجاح 🟢 لا يوجد أي تأخير أو ارتداد للصوت"), 800);
-                            }}
-                            className="bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 text-purple-200 text-[8.5px] font-bold px-2.5 py-1 rounded cursor-pointer animate-pulse"
-                          >
-                            بدء الفحص ⚡
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
 
                   {/* ROOM SETTINGS DRAWER */}
                   {isRoomSettingsDrawerOpen && (
@@ -5373,21 +5074,7 @@ export default function App() {
                           </span>
                         </button>
 
-                        {/* 4. Disconnect simulation */}
-                        <button
-                          onClick={() => {
-                            setAgoraLatency(prev => prev === 21 ? 999 : 21);
-                            setAgoraPacketLoss(prev => prev === 0.0 ? 82.5 : 0.0);
-                            setIsAdminDrawerOpen(false);
-                          }}
-                          className="w-full bg-[#03000a] hover:bg-slate-900 border border-slate-800 text-red-400 py-2 px-4 rounded-xl text-xs font-bold flex justify-between items-center transition cursor-pointer active:scale-95"
-                        >
-                          <span>{agoraLatency === 21 ? 'تخريب جودة البث' : 'استعادة استقرار الشبكة'}</span>
-                          <span className="flex items-center gap-1">
-                            <ShieldAlert className="w-4 h-4 text-red-500" />
-                            محاكاة ضعف الشبكة وفقدان الحزم
-                          </span>
-                        </button>
+                        {/* 4. Disconnect simulation removed as Agora is disabled */}
                       </div>
                     </div>
                   </>

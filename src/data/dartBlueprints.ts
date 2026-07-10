@@ -29,7 +29,7 @@ dependencies:
   animate_do: ^3.1.2
   
   # WebRTC & Communication
-  # agorartc_engine: ^6.2.0 # (Or zego_express_engine)
+  # zego_express_engine: ^4.0.0
   
   # Authentication & Cloud (Stubs included in architecture)
   google_sign_in: ^6.1.5
@@ -189,7 +189,7 @@ class AppTheme {
   webrtc_service: `import 'dart:async';
 
 /// Mobile-ONLY Abstract WebRTC Bridge Interface.
-/// Designed specifically for Agora.io or ZegoCloud Mobile Voice SDKs.
+/// Designed specifically for ZegoCloud Mobile Voice SDKs.
 abstract class WebRtcVoiceService {
   Future<void> initializeSdk({required String appId});
   Future<void> joinVoiceRoom({required String roomId, required String token, required int uid});
@@ -198,44 +198,7 @@ abstract class WebRtcVoiceService {
   Future<void> muteRemoteAudio(int uid, bool isMuted);
   Stream<List<int>> get activeSpeakersStream;
 }
-
-/// Production implementation placeholder for smartphone integration
-class AgoraVoiceService implements WebRtcVoiceService {
-  bool _isInitialized = false;
-  final StreamController<List<int>> _speakerController = StreamController<List<int>>.broadcast();
-
-  @override
-  Future<void> initializeSdk({required String appId}) async {
-    // TODO: Integrate AgoraRtcEngine for iOS & Android
-    // _engine = createAgoraRtcEngine();
-    // await _engine.initialize(RtcEngineContext(appId: appId));
-    _isInitialized = true;
-  }
-
-  @override
-  Future<void> joinVoiceRoom({required String roomId, required String token, required int uid}) async {
-    if (!_isInitialized) throw Exception("Agora Voice SDK not initialized");
-    // await _engine.joinChannel(token: token, channelId: roomId, uid: uid, options: ChannelMediaOptions(clientRoleType: ClientRoleType.clientRoleBroadcaster));
-  }
-
-  @override
-  Future<void> leaveVoiceRoom() async {
-    // await _engine.leaveChannel();
-  }
-
-  @override
-  Future<void> muteLocalAudio(bool isMuted) async {
-    // await _engine.muteLocalAudioStream(isMuted);
-  }
-
-  @override
-  Future<void> muteRemoteAudio(int uid, bool isMuted) async {
-    // await _engine.muteRemoteAudioStream(uid: uid, mute: isMuted);
-  }
-
-  @override
-  Stream<List<int>> get activeSpeakersStream => _speakerController.stream;
-}`,
+`,
 
   economy_service: `import 'dart:async';
 

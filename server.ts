@@ -3,7 +3,6 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-import { RtcTokenBuilder, RtcRole } from "agora-access-token";
 import { getDb, saveDb, initDb, DatabaseSchema } from "./server/db";
 import { AppUser, VoiceRoom, AgentTransferLog, VoiceSeat } from "./src/types";
 import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
@@ -1635,24 +1634,7 @@ app.post("/api/clans/join", async (req, res) => {
   res.json({ success: true, message: "تم الانضمام للعائلة بنجاح!" });
 });
 
-// Agora RTC Token Generator Endpoint
-app.get("/api/agora/token", (req, res) => {
-  const channelName = (req.query.channelName as string) || "sada_voice_chat";
-  const uid = Number(req.query.uid) || 0;
 
-  // In production, you would use 'agora-access-token' library:
-  // const token = RtcTokenBuilder.buildTokenWithUid(appId, appCertificate, channelName, uid, role, privilegeExpireTime);
-  
-  // Here we return a standardized real token response alongside the Agora credentials
-  // So the client can connect safely using official WebRTC
-  res.json({
-    appId: "7c3aed9c026d3fab400531394ddf0286", // App ID simulation
-    channelName,
-    uid,
-    token: `007eJxTYCgzbWrfcnL/0jW7p+03D811m9rWf+H1XpX8lqSgN+e3zS9UYDAwtzS2TDFMNTA1MUlNTkoxSDE0MjNPsUhKsUgxSjYxSbbgWpbe0pLe0pLedWJmZmSAgIIPg8XJn9PzSguKShNzUovTizPT8ksyc4vzyxKLcxmYAAAcfDBk`,
-    createdAt: new Date().toISOString()
-  });
-});
 
 // Tencent Cloud TRTC Token Generator Endpoint (Generate UserSig)
 app.post("/api/auth/tencent-token", (req, res) => {
