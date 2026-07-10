@@ -9,6 +9,7 @@ import { AppUser, VoiceRoom, AgentTransferLog, VoiceSeat } from "./src/types";
 import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import { GoogleAuth } from "google-auth-library";
 
 // Initialize database
 initDb();
@@ -21,6 +22,20 @@ let firestoreDisabled = false;
 async function checkFirestoreAccess() {
   if (firestoreDisabled) return;
   try {
+    // 1. Verify Google Application Default Credentials (ADC) or credentials exist.
+    // If not, we fall back to local database instead of throwing an unhandled background exception in gRPC.
+    try {
+      const auth = new GoogleAuth();
+      await auth.getApplicationDefault();
+    } catch (credentialError: any) {
+      console.warn("⚠️ Google Application Default Credentials are not available:", credentialError.message || credentialError);
+      console.log("Switching to secure local JSON database storage.");
+      firestoreDbInstance = null;
+      firebaseInitialized = true;
+      firestoreDisabled = true;
+      return;
+    }
+
     const apps = getApps();
     const customDbId = "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698";
     const projectId = "gen-lang-client-0348881645";
@@ -33,22 +48,6 @@ async function checkFirestoreAccess() {
       });
     } else {
       app = apps[0];
-    }
-
-    // Programmatically ensure authorized domains are set correctly in Firebase Auth
-    try {
-      const authInstance = getAuth(app);
-      await authInstance.projectConfigManager().updateProjectConfig({
-        authorizedDomains: [
-          "localhost",
-          "karem-rx44.onrender.com",
-          "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698.firebaseapp.com",
-          "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698.web.app"
-        ]
-      });
-      console.log("Firebase Auth authorized domains updated successfully programmatically.");
-    } catch (authError) {
-      console.warn("Failed to update Firebase Auth authorized domains automatically:", authError);
     }
 
     const tempDb = getFirestore(app, customDbId);
