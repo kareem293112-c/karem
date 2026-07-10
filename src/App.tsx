@@ -2396,13 +2396,7 @@ export default function App() {
                               ))}
                             </div>
                           ) : (
-                            rooms.filter((room) => {
-                              const isMyOwnedRoom = (room.owner_id && currentUser?.id && room.owner_id === currentUser.id) ||
-                                                    (room.owner_id && currentUser?.name && room.owner_id === currentUser.name) ||
-                                                    (room.hostName && currentUser?.name && room.hostName === currentUser.name) ||
-                                                    (currentUser?.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (room.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || room.hostName?.includes("ABDULKERIM") || room.name === "حلبي" || room.name === "ؤ"));
-                              return isMyOwnedRoom;
-                            }).map((room) => (
+                            rooms.map((room) => (
                               <div
                                 key={room.id}
                                 onClick={() => handleEnterRoom(room)}
