@@ -982,6 +982,11 @@ export default function App() {
     };
   }, [activeRoom?.id, currentUser?.id]);
 
+  // Track current user's specific seat status to prevent unnecessary microphone restarts when other users move
+  const myCurrentSeat = activeRoom?.seats?.find(s => s.userId === currentUser?.id);
+  const myCurrentSeatIndex = myCurrentSeat ? myCurrentSeat.index : null;
+  const myCurrentSeatMuted = myCurrentSeat ? myCurrentSeat.isMuted : true;
+
   // Voice capture effect
   useEffect(() => {
     if (currentScreen !== 'room' || !activeRoom || !currentUser) {
@@ -999,7 +1004,7 @@ export default function App() {
     }
 
     return () => stopVoiceCapture();
-  }, [currentScreen, activeRoom?.seats, currentUser?.id]);
+  }, [currentScreen, activeRoom?.id, currentUser?.id, myCurrentSeatIndex, myCurrentSeatMuted]);
 
   // Agora RTC Synchronization with Seat changes (Broadcaster / Audience role switching & mute)
   useEffect(() => {
@@ -1052,7 +1057,7 @@ export default function App() {
         }));
       }
     }
-  }, [activeRoom?.seats, currentScreen, agoraStatus.isInitialized, currentUser?.id]);
+  }, [currentScreen, activeRoom?.id, currentUser?.id, agoraStatus.isInitialized, myCurrentSeatIndex, myCurrentSeatMuted]);
 
   // Relocated states to the top of the App component to prevent block-scoped reference errors.
 
