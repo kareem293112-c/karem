@@ -941,20 +941,29 @@ app.post("/api/rooms/create", async (req, res) => {
   const { room_name, owner_id, is_private, password, host_name, host_avatar } = req.body;
   const tencent_room_id = Math.floor(Math.random() * 1000000);
   
+  // Guard against undefined values to prevent Firestore and local DB validation failures
+  const sanitizedRoomName = room_name ? String(room_name).trim() : "مجلس صوتي جديد";
+  const sanitizedOwnerId = owner_id ? String(owner_id) : "";
+  const sanitizedHostName = host_name ? String(host_name).trim() : "مالك المجلس";
+  const sanitizedHostAvatar = host_avatar ? String(host_avatar) : "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120";
+  const sanitizedPassword = password ? String(password).trim() : "";
+
+  let lastErrorMsg = "";
+
   const fDb = getFirestoreDb();
   if (fDb) {
     try {
       const roomRef = await fDb.collection("voice_rooms").add({
-        room_name,
-        owner_id,
+        room_name: sanitizedRoomName,
+        owner_id: sanitizedOwnerId,
         tencent_room_id,
         is_private: !!is_private,
-        room_password: password || "",
+        room_password: sanitizedPassword,
         max_seats: 8,
-        host_name: host_name || "مالك المجلس",
-        host_avatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
-        hostName: host_name || "مالك المجلس",
-        hostAvatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+        host_name: sanitizedHostName,
+        host_avatar: sanitizedHostAvatar,
+        hostName: sanitizedHostName,
+        hostAvatar: sanitizedHostAvatar,
         created_at: FieldValue.serverTimestamp()
       });
       
@@ -968,40 +977,54 @@ app.post("/api/rooms/create", async (req, res) => {
         });
       }
       
+      console.log(`Firestore successfully created voice room: ${roomRef.id}`);
       return res.json({ room_id: roomRef.id, tencent_room_id });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Firestore error creating room:", error);
+      lastErrorMsg = error?.message || String(error);
     }
   }
 
   // Fallback to local DB
-  const localDb = getDb();
-  const newRoomId = "room_" + (localDb.rooms.length + 1);
-  const seats = Array.from({ length: 8 }, (_, i) => ({
-    index: i + 1, // 1 to 8
-    userId: null,
-    isMuted: false,
-    isLocked: false
-  }));
-  
-  const newRoom: any = {
-    id: newRoomId,
-    name: room_name,
-    hostName: host_name || owner_id || "مالك المجلس",
-    hostAvatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
-    isPrivate: !!is_private,
-    password: password || "",
-    level: 1,
-    xp: 0,
-    activeUsersCount: 1,
-    seats: seats,
-    tencent_room_id: tencent_room_id,
-    owner_id: owner_id
-  };
-  
-  localDb.rooms.push(newRoom);
-  saveDb(localDb);
-  res.json({ room_id: newRoomId, tencent_room_id });
+  try {
+    const localDb = getDb();
+    const newRoomId = "room_" + (localDb.rooms.length + 1);
+    const seats = Array.from({ length: 8 }, (_, i) => ({
+      index: i + 1, // 1 to 8
+      userId: null,
+      isMuted: false,
+      isLocked: false
+    }));
+    
+    const newRoom: any = {
+      id: newRoomId,
+      name: sanitizedRoomName,
+      hostName: sanitizedHostName,
+      hostAvatar: sanitizedHostAvatar,
+      isPrivate: !!is_private,
+      password: sanitizedPassword,
+      level: 1,
+      xp: 0,
+      activeUsersCount: 1,
+      seats: seats,
+      tencent_room_id: tencent_room_id,
+      owner_id: sanitizedOwnerId
+    };
+    
+    localDb.rooms.push(newRoom);
+    saveDb(localDb);
+    console.log(`Fallback local JSON successfully created voice room: ${newRoomId}`);
+    return res.json({ room_id: newRoomId, tencent_room_id });
+  } catch (localError: any) {
+    console.error("Fallback local database write failed:", localError);
+    const combinedError = lastErrorMsg 
+      ? `Firestore Error: ${lastErrorMsg}. Local DB Error: ${localError?.message || localError}`
+      : `Local DB Error: ${localError?.message || localError}`;
+    return res.status(500).json({ 
+      success: false, 
+      error: `فشل إنشاء الروم في قواعد البيانات السحابية والمحلية: ${combinedError}` 
+    });
+  }
 });
 
 app.post("/api/rooms/update", async (req, res) => {

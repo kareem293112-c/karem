@@ -3571,7 +3571,12 @@ export default function App() {
                                   alert(`🎉 تم إنشاء مجلسك الصوتي "${newRoomNameInput.trim()}" بنجاح!`);
                                   await fetchDbStates();
                                 } else {
-                                  setNewRoomError('فشل إنشاء الروم، يرجى المحاولة مرة أخرى.');
+                                  try {
+                                    const errData = await response.json();
+                                    setNewRoomError(errData.error || 'فشل إنشاء الروم، يرجى المحاولة مرة أخرى.');
+                                  } catch {
+                                    setNewRoomError('فشل إنشاء الروم، يرجى المحاولة مرة أخرى.');
+                                  }
                                 }
                               } catch (e) {
                                 console.error(e);
