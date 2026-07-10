@@ -80,7 +80,7 @@ function getFirestoreDb() {
 }
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Enable JSON body parsing
 app.use(express.json());
