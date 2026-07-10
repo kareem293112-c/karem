@@ -709,8 +709,24 @@ export default function App() {
     };
   }, [activeRoom?.id, e2eePassphrase]);
 
-  // Play incoming voice stream audio via Web Audio API
-  const playAudioChunk = (speakerId: string, pcmData: number[]) => {
+  // Helper to downsample audio to reduce WebSocket payload size and bandwidth usage
+  const resampleAudio = (audioBuffer: Float32Array, fromRate: number, toRate: number): Float32Array => {
+    if (fromRate === toRate) return audioBuffer;
+    const interpolationStep = fromRate / toRate;
+    const newLength = Math.round(audioBuffer.length / interpolationStep);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+      const rawIndex = i * interpolationStep;
+      const index = Math.floor(rawIndex);
+      const nextIndex = Math.min(index + 1, audioBuffer.length - 1);
+      const fraction = rawIndex - index;
+      result[i] = audioBuffer[index] * (1 - fraction) + audioBuffer[nextIndex] * fraction;
+    }
+    return result;
+  };
+
+  // Play incoming voice stream audio via Web Audio API with smooth jitter buffering & scheduled playback
+  const playAudioChunk = (speakerId: string, pcmData: number[], senderSampleRate?: number) => {
     if (speakerId === currentUser?.id) return;
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -722,7 +738,8 @@ export default function App() {
         ctx.resume();
       }
       
-      const buffer = ctx.createBuffer(1, pcmData.length, ctx.sampleRate || 44100);
+      const targetSampleRate = senderSampleRate || 16000;
+      const buffer = ctx.createBuffer(1, pcmData.length, targetSampleRate);
       const channel = buffer.getChannelData(0);
       for (let i = 0; i < pcmData.length; i++) {
         channel[i] = pcmData[i];
@@ -731,7 +748,16 @@ export default function App() {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
-      source.start();
+      
+      // Elegant jitter buffering & audio concatenating schedule
+      const currentTime = ctx.currentTime;
+      if (!(window as any).nextPlayTime || (window as any).nextPlayTime < currentTime) {
+        // Start playing slightly in the future (0.08 seconds) to absorb network jitter smoothly
+        (window as any).nextPlayTime = currentTime + 0.08;
+      }
+      
+      source.start((window as any).nextPlayTime);
+      (window as any).nextPlayTime += buffer.duration;
 
       // Trigger speaking wave indicator on seat
       if (activeRoom) {
@@ -744,7 +770,7 @@ export default function App() {
           }
           (window as any).speakingTimers[speakerId] = setTimeout(() => {
             setSpeakingSeatIndex(null);
-          }, 450);
+          }, 350);
         }
       }
     } catch (e) {
@@ -777,17 +803,26 @@ export default function App() {
       
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
+        
+        // 1. Downsample audio on-the-fly to 16000Hz (crystal clear for voice, 3x bandwidth reduction)
+        const targetRate = 16000;
+        const downsampled = resampleAudio(inputData, audioContext.sampleRate, targetRate);
+        
+        // 2. Reduce decimal precision to 3 decimal places (saves up to 70% additional JSON payload size!)
+        const pcmData = Array.from(downsampled).map(v => Math.round(v * 1000) / 1000);
+        
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
             action: 'audio_chunk',
             roomId: activeRoom?.id,
             userId: currentUser?.id,
             userName: currentUser?.name,
-            audioData: Array.from(inputData)
+            sampleRate: targetRate,
+            audioData: pcmData
           }));
         }
       };
-      console.log("Real-time voice stream active!");
+      console.log("Real-time voice stream active with 16kHz downsampling & optimization!");
     } catch (err) {
       console.error("Failed to capture microphone voice stream:", err);
     }
@@ -921,7 +956,7 @@ export default function App() {
         }
 
         else if (data.type === 'audio_stream') {
-          playAudioChunk(data.userId, data.audioData);
+          playAudioChunk(data.userId, data.audioData, data.sampleRate);
         }
 
         else if (data.type === 'new_private_message') {
