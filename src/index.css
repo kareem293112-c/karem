@@ -97,3 +97,114 @@ body {
   animation: greenPulse 1.5s infinite ease-in-out;
 }
 
+/* Radar pulse effects for speaking voice seats */
+@keyframes radarPulse1 {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes radarPulse2 {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes radarPulse3 {
+  0% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+.animate-radar-1 {
+  animation: radarPulse1 1.4s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-radar-2 {
+  animation: radarPulse2 1.8s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-radar-3 {
+  animation: radarPulse3 2.2s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Floating bokeh / particles animation */
+@keyframes floatParticle1 {
+  0%, 100% {
+    transform: translateY(0px) translateX(0px);
+    opacity: 0.15;
+  }
+  50% {
+    transform: translateY(-80px) translateX(40px);
+    opacity: 0.45;
+  }
+}
+
+@keyframes floatParticle2 {
+  0%, 100% {
+    transform: translateY(0px) translateX(0px);
+    opacity: 0.1;
+  }
+  50% {
+    transform: translateY(-120px) translateX(-30px);
+    opacity: 0.35;
+  }
+}
+
+.animate-float-particle-1 {
+  animation: floatParticle1 12s ease-in-out infinite;
+}
+
+.animate-float-particle-2 {
+  animation: floatParticle2 16s ease-in-out infinite;
+}
+
+/* Luxurious rotating golden glow for VIP frame */
+@keyframes goldRotate {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.vip-golden-shine {
+  background: linear-gradient(135deg, #d97706, #fbbf24, #ef4444, #f59e0b, #d97706);
+  background-size: 300% 300%;
+  animation: goldRotate 4s ease infinite;
+}
+
+/* Ambient backdrop pulse */
+@keyframes pulseBackdrop {
+  0%, 100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.animate-ambient-pulse {
+  animation: pulseBackdrop 6s ease-in-out infinite;
+}
+
+

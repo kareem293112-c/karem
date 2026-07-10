@@ -3,43 +3,60 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
+import { RtcTokenBuilder, RtcRole } from "agora-access-token";
 import { getDb, saveDb, initDb, DatabaseSchema } from "./server/db";
 import { AppUser, VoiceRoom, AgentTransferLog, VoiceSeat } from "./src/types";
-import * as admin from "firebase-admin";
+import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 
 // Initialize database
 initDb();
 
-// Initialize Firebase Admin SDK lazily to prevent boot crashes if credentials are missing
+// Initialize Firebase Admin SDK lazily with a startup connection/permission probe
 let firestoreDbInstance: any = null;
 let firebaseInitialized = false;
+let firestoreDisabled = false;
+
+async function checkFirestoreAccess() {
+  if (firestoreDisabled) return;
+  try {
+    const apps = getApps();
+    const customDbId = "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698";
+    const projectId = "gen-lang-client-0348881645";
+    
+    let app;
+    if (apps.length === 0) {
+      app = initializeApp({
+        credential: applicationDefault(),
+        projectId: projectId
+      });
+    } else {
+      app = apps[0];
+    }
+    const tempDb = getFirestore(app, customDbId);
+    
+    // Attempt a lightweight read operation to verify credentials and API status.
+    // If it succeeds, remote Firestore persistence is verified and active.
+    await tempDb.collection("users").limit(1).get();
+    
+    firestoreDbInstance = tempDb;
+    firebaseInitialized = true;
+    console.log("Firestore connection verified. App is operating in Cloud Database mode.");
+  } catch (error: any) {
+    // Graceful fallback to local JSON storage without polluting console with stack traces
+    console.log("Firestore is offline or unauthorized. Switching to secure local JSON database storage.");
+    firestoreDbInstance = null;
+    firebaseInitialized = true;
+    firestoreDisabled = true;
+  }
+}
 
 function getFirestoreDb() {
+  if (firestoreDisabled) {
+    return null;
+  }
   if (!firebaseInitialized) {
-    try {
-      if ((admin as any).apps.length === 0) {
-        const customDbId = "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698";
-        const projectId = "gen-lang-client-0348881645";
-        
-        (admin as any).initializeApp({
-          credential: (admin as any).credential.applicationDefault(),
-          projectId: projectId
-        });
-        
-        const { getFirestore } = require("firebase-admin/firestore");
-        firestoreDbInstance = getFirestore((admin as any).apps[0], customDbId);
-      } else {
-        const customDbId = "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698";
-        const { getFirestore } = require("firebase-admin/firestore");
-        firestoreDbInstance = getFirestore((admin as any).apps[0], customDbId);
-      }
-      firebaseInitialized = true;
-      console.log("Firebase Admin SDK initialized successfully.");
-    } catch (error: any) {
-      console.warn("Firebase Admin SDK failed to initialize. Falling back to local file database:", error.message || error);
-      firestoreDbInstance = null;
-      firebaseInitialized = true;
-    }
+    return null;
   }
   return firestoreDbInstance;
 }
@@ -246,11 +263,70 @@ app.get("/api/db", (req, res) => {
 });
 
 // Users REST API
-app.get("/api/users", (req, res) => {
+app.get("/api/users", async (req, res) => {
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const snap = await fDb.collection("users").get();
+      const list: any[] = [];
+      snap.forEach((doc: any) => {
+        const d = doc.data();
+        list.push({
+          id: doc.id,
+          name: d.username || d.name,
+          avatar: d.avatar_url || d.avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+          level: d.vip_level || d.level || 1,
+          coins: d.coins_balance !== undefined ? d.coins_balance : (d.coins || 0),
+          xp: d.sender_xp || d.xp || 0,
+          role: d.role || "user",
+          bio: d.bio || "عضو مميز في صدى العرب ☕",
+          followers: d.followers || [],
+          following: d.following || [],
+          clanId: d.clan_id || d.clanId || undefined,
+          senderXp: d.sender_xp || 0,
+          charmXp: d.charm_xp || 0,
+          badges: d.badges || [],
+          vipLevel: d.vip_level || d.level || 1
+        });
+      });
+      return res.json(list);
+    } catch (e) {
+      console.warn("Firestore list users error, fallback to local:", e);
+    }
+  }
   res.json(getDb().users);
 });
 
-app.get("/api/users/:id", (req, res) => {
+app.get("/api/users/:id", async (req, res) => {
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const doc = await fDb.collection("users").doc(req.params.id).get();
+      if (doc.exists) {
+        const d = doc.data()!;
+        return res.json({
+          id: doc.id,
+          name: d.username || d.name,
+          avatar: d.avatar_url || d.avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+          level: d.vip_level || d.level || 1,
+          coins: d.coins_balance !== undefined ? d.coins_balance : (d.coins || 0),
+          xp: d.sender_xp || d.xp || 0,
+          role: d.role || "user",
+          bio: d.bio || "عضو مميز في صدى العرب ☕",
+          followers: d.followers || [],
+          following: d.following || [],
+          clanId: d.clan_id || d.clanId || undefined,
+          senderXp: d.sender_xp || 0,
+          charmXp: d.charm_xp || 0,
+          badges: d.badges || [],
+          vipLevel: d.vip_level || d.level || 1
+        });
+      }
+    } catch (e) {
+      console.warn("Firestore fetch user error, fallback to local:", e);
+    }
+  }
+
   const user = getDb().users.find(u => u.id === req.params.id);
   if (user) {
     res.json(user);
@@ -259,42 +335,169 @@ app.get("/api/users/:id", (req, res) => {
   }
 });
 
-app.post("/api/users", (req, res) => {
+app.post("/api/users", async (req, res) => {
   const { id, name, avatar, level, coins, xp } = req.body;
   if (!id || !name) {
     return res.status(400).json({ error: "معرف المستخدم والاسم مطلوبين" });
   }
 
-  const db = getDb();
-  let user = db.users.find(u => u.id === id);
+  const fDb = getFirestoreDb();
+  let user: any;
 
-  if (user) {
-    // Update existing user properties
-    user.name = name;
-    if (avatar) user.avatar = avatar;
+  if (fDb) {
+    try {
+      const userRef = fDb.collection("users").doc(id);
+      const userDoc = await userRef.get();
+      if (userDoc.exists) {
+        const d = userDoc.data();
+        await userRef.update({
+          username: name,
+          avatar_url: avatar || d?.avatar_url || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120"
+        });
+        user = {
+          id,
+          name,
+          avatar: avatar || d?.avatar_url || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+          level: d?.vip_level || d?.level || 1,
+          coins: d?.coins_balance !== undefined ? d?.coins_balance : (d?.coins || 10),
+          xp: d?.sender_xp || d?.xp || 0
+        };
+      } else {
+        const newUserObj = {
+          user_id: id,
+          username: name,
+          avatar_url: avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
+          coins_balance: coins !== undefined ? coins : 1000,
+          vip_level: level || 1,
+          sender_xp: xp || 0,
+          charm_xp: 0,
+          badges: []
+        };
+        await userRef.set(newUserObj);
+        user = {
+          id,
+          name: newUserObj.username,
+          avatar: newUserObj.avatar_url,
+          level: newUserObj.vip_level,
+          coins: newUserObj.coins_balance,
+          xp: newUserObj.sender_xp
+        };
+      }
+    } catch (e) {
+      console.warn("Firestore save user error, fallback to local:", e);
+    }
+  }
+
+  const db = getDb();
+  let localUser = db.users.find(u => u.id === id);
+
+  if (localUser) {
+    localUser.name = name;
+    if (avatar) localUser.avatar = avatar;
+    if (user) {
+      localUser.level = user.level;
+      localUser.coins = user.coins;
+      localUser.xp = user.xp;
+    }
   } else {
-    // Create new user
-    user = {
+    localUser = {
       id,
       name,
       avatar: avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120",
-      level: level || 1,
-      coins: coins || 10, // 10 welcome bonus
-      xp: xp || 0
+      level: user?.level || level || 1,
+      coins: user?.coins !== undefined ? user?.coins : (coins !== undefined ? coins : 1000),
+      xp: user?.xp || xp || 0
     };
-    db.users.push(user);
+    db.users.push(localUser);
   }
 
   saveDb(db);
-  res.json(user);
+  res.json(user || localUser);
 });
 
 // Rooms REST API
-app.get("/api/rooms", (req, res) => {
+app.get("/api/rooms", async (req, res) => {
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const snap = await fDb.collection("voice_rooms").get();
+      const roomsList: any[] = [];
+      for (const doc of snap.docs) {
+        const d = doc.data();
+        
+        // Fetch seats subcollection
+        const seatsSnap = await doc.ref.collection("mic_seats").get();
+        const seats = seatsSnap.docs.map(sDoc => {
+          const sData = sDoc.data();
+          return {
+            index: sData.seat_number,
+            userId: sData.current_user_id || null,
+            isMuted: sData.is_muted || false,
+            isLocked: sData.is_locked || false
+          };
+        }).sort((a, b) => a.index - b.index);
+
+        roomsList.push({
+          id: doc.id,
+          name: d.room_name || d.name,
+          hostName: d.host_name || d.hostName || "مالك المجلس",
+          hostAvatar: d.host_avatar || d.hostAvatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+          isPrivate: d.is_private || d.isPrivate || false,
+          password: d.room_password || d.password || "",
+          level: d.level || 1,
+          xp: d.xp || 0,
+          activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
+          seats: seats,
+          tencent_room_id: d.tencent_room_id || 0,
+          owner_id: d.owner_id || null
+        });
+      }
+      return res.json(roomsList);
+    } catch (e) {
+      console.warn("Firestore fetch rooms error, fallback to local:", e);
+    }
+  }
   res.json(getDb().rooms);
 });
 
-app.get("/api/rooms/:id", (req, res) => {
+app.get("/api/rooms/:id", async (req, res) => {
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const doc = await fDb.collection("voice_rooms").doc(req.params.id).get();
+      if (doc.exists) {
+        const d = doc.data()!;
+        const seatsSnap = await doc.ref.collection("mic_seats").get();
+        const seats = seatsSnap.docs.map(sDoc => {
+          const sData = sDoc.data();
+          return {
+            index: sData.seat_number,
+            userId: sData.current_user_id || null,
+            isMuted: sData.is_muted || false,
+            isLocked: sData.is_locked || false
+          };
+        }).sort((a, b) => a.index - b.index);
+
+        return res.json({
+          id: doc.id,
+          name: d.room_name || d.name,
+          hostName: d.host_name || d.hostName || "مالك المجلس",
+          hostAvatar: d.host_avatar || d.hostAvatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+          isPrivate: d.is_private || d.isPrivate || false,
+          password: d.room_password || d.password || "",
+          level: d.level || 1,
+          xp: d.xp || 0,
+          activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
+          seats: seats,
+          tencent_room_id: d.tencent_room_id || 0,
+          owner_id: d.owner_id || null
+        });
+      }
+    } catch (e) {
+      console.warn("Firestore fetch single room error, fallback to local:", e);
+    }
+  }
+
   const room = getDb().rooms.find(r => r.id === req.params.id);
   if (room) {
     res.json(room);
@@ -309,88 +512,302 @@ app.get("/api/transactions", (req, res) => {
 });
 
 app.get("/api/agent/balance", (req, res) => {
-  res.json({ balance: getDb().agentBalance });
+  const agent = getDb().users.find(u => u.id === "1004" || u.role === "agent");
+  res.json({ balance: agent ? agent.coins : 250000 });
 });
 
-// Real Agent Coin Transfer API
-app.post("/api/agent/transfer", (req, res) => {
-  const { targetUserId, amount, pin } = req.body;
-
-  if (pin !== "9999") {
-    return res.status(403).json({ error: "رمز تأكيد الوكيل المعتمد (PIN) غير صحيح!" });
+// GET /api/agents/hub - Get list of active agents
+app.get("/api/agents/hub", async (req, res) => {
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const agentsSnap = await fDb.collection("agents_hub").where("is_active", "==", true).get();
+      if (!agentsSnap.empty) {
+        const agents: any[] = [];
+        agentsSnap.forEach((doc: any) => {
+          agents.push({ id: doc.id, ...doc.data() });
+        });
+        return res.json(agents);
+      } else {
+        // Populate Firestore with default agents if empty
+        const defaultAgents = [
+          {
+            agent_id: "1004",
+            agent_name: "خالد الحربي (الوكيل المعتمد)",
+            contact_whatsapp: "https://wa.me/966500000000",
+            is_active: true
+          },
+          {
+            agent_id: "1001",
+            agent_name: "أحمد العتيبي (الوكيل الذهبي)",
+            contact_whatsapp: "https://wa.me/966511111111",
+            is_active: true
+          }
+        ];
+        for (const ag of defaultAgents) {
+          await fDb.collection("agents_hub").doc(ag.agent_id).set(ag);
+        }
+        return res.json(defaultAgents);
+      }
+    } catch (e) {
+      console.warn("Error fetching agents_hub from Firestore, falling back:", e);
+    }
   }
 
-  const transferAmount = Number(amount);
-  if (isNaN(transferAmount) || transferAmount <= 0) {
-    return res.status(400).json({ error: "مبلغ التحويل يجب أن يكون رقماً موجباً أكبر من صفر" });
-  }
-
+  // Fallback to local DB
   const db = getDb();
+  res.json(db.agentsHub || []);
+});
 
-  if (db.agentBalance < transferAmount) {
-    return res.status(400).json({ error: "فشل التحويل: رصيد محفظة الوكالة غير كافي!" });
+// POST /api/agents/transfer - Secure Agent to User Transfer API
+app.post("/api/agents/transfer", async (req, res) => {
+  const { agent_id, receiver_id, coins_amount } = req.body;
+  const transferAmount = Number(coins_amount);
+
+  if (!agent_id || !receiver_id || isNaN(transferAmount) || transferAmount <= 0) {
+    return res.status(400).json({ error: "بيانات التحويل غير مكتملة أو القيمة غير صالحة" });
   }
 
-  const targetUser = db.users.find(u => u.id === targetUserId);
-  if (!targetUser) {
-    return res.status(404).json({ error: "معرف المستلم غير موجود في قاعدة بيانات صدى العرب!" });
+  const fDb = getFirestoreDb();
+  let agentName = "وكيل معتمد";
+  let receiverName = "عضو صدى العرب";
+
+  if (fDb) {
+    try {
+      const agentRef = fDb.collection("users").doc(agent_id);
+      const receiverRef = fDb.collection("users").doc(receiver_id);
+
+      const result = await fDb.runTransaction(async (transaction: any) => {
+        const agentDoc = await transaction.get(agentRef);
+        const receiverDoc = await transaction.get(receiverRef);
+
+        if (!agentDoc.exists) {
+          throw new Error("حساب الوكيل غير موجود في صدى العرب");
+        }
+
+        const agentData = agentDoc.data();
+        agentName = agentData.username || agentData.name || "وكيل شحن";
+        const agentRole = agentData.role || "user";
+        const agentBalance = agentData.coins_balance !== undefined ? agentData.coins_balance : (agentData.coins || 0);
+
+        if (agentRole !== "agent" && agentRole !== "admin") {
+          throw new Error("المستخدم ليس لديه صلاحية وكيل شحن معتمد");
+        }
+
+        if (agentBalance < transferAmount) {
+          throw new Error("رصيد الوكيل غير كافي لإتمام هذه العملية");
+        }
+
+        if (!receiverDoc.exists) {
+          throw new Error("معرف حساب العميل المستهدف غير موجود");
+        }
+
+        const receiverData = receiverDoc.data();
+        receiverName = receiverData.username || receiverData.name || "عميل";
+        const receiverBalance = receiverData.coins_balance !== undefined ? receiverData.coins_balance : (receiverData.coins || 0);
+
+        // Perform atomic balance updates
+        transaction.update(agentRef, {
+          coins_balance: agentBalance - transferAmount,
+          coins: agentBalance - transferAmount
+        });
+
+        transaction.update(receiverRef, {
+          coins_balance: receiverBalance + transferAmount,
+          coins: receiverBalance + transferAmount
+        });
+
+        // Log the transaction in Firestore agent_transfer_logs
+        const logRef = fDb.collection("agent_transfer_logs").doc();
+        const logData = {
+          id: logRef.id,
+          agent_id,
+          agent_name: agentName,
+          receiver_id,
+          receiver_name: receiverName,
+          coins_amount: transferAmount,
+          timestamp: FieldValue.serverTimestamp()
+        };
+        transaction.set(logRef, logData);
+
+        return {
+          agentBalance: agentBalance - transferAmount,
+          receiverBalance: receiverBalance + transferAmount,
+          agentName,
+          receiverName
+        };
+      });
+
+      // Synchronize back to Local DB
+      const localDb = getDb();
+      const localAgent = localDb.users.find(u => u.id === agent_id);
+      const localReceiver = localDb.users.find(u => u.id === receiver_id);
+
+      if (localAgent) {
+        localAgent.coins = result.agentBalance;
+      }
+      if (localReceiver) {
+        localReceiver.coins = result.receiverBalance;
+      }
+
+      const localLog = {
+        id: `atl_${Date.now()}`,
+        agent_id,
+        agent_name: result.agentName,
+        receiver_id,
+        receiver_name: result.receiverName,
+        coins_amount: transferAmount,
+        timestamp: new Date().toISOString()
+      };
+
+      if (!localDb.agentTransferLogs) {
+        localDb.agentTransferLogs = [];
+      }
+      localDb.agentTransferLogs.unshift(localLog);
+
+      // Keep default transaction list synced too
+      localDb.transactions.unshift({
+        id: localLog.id,
+        senderId: agent_id,
+        senderName: result.agentName,
+        receiverId: receiver_id,
+        receiverName: result.receiverName,
+        amount: transferAmount,
+        timestamp: localLog.timestamp
+      });
+
+      saveDb(localDb);
+
+      // Broadcast changes via Websockets
+      const broadcastMsg = {
+        type: "agent_transfer_update",
+        agentId: agent_id,
+        agentBalance: result.agentBalance,
+        receiverId: receiver_id,
+        receiverBalance: result.receiverBalance,
+        log: localLog
+      };
+      broadcastToRoom("room_1", broadcastMsg);
+      broadcastToRoom("room_2", broadcastMsg);
+      broadcastToRoom("room_3", broadcastMsg);
+
+      return res.json({
+        success: true,
+        message: `تم شحن ${transferAmount} كوينز بنجاح إلى ${result.receiverName}`,
+        agent_balance: result.agentBalance,
+        receiver_balance: result.receiverBalance
+      });
+
+    } catch (error: any) {
+      console.error("Firestore agent transfer failed:", error);
+      return res.status(400).json({ error: error.message || "فشلت عملية التحويل عبر السيرفر" });
+    }
   }
 
-  // Deduct from agent balance
-  db.agentBalance -= transferAmount;
+  // Fallback to purely local database if Firebase is unavailable
+  const localDb = getDb();
+  const localAgent = localDb.users.find(u => u.id === agent_id);
+  const localReceiver = localDb.users.find(u => u.id === receiver_id);
 
-  // Add to target user coins
-  targetUser.coins += transferAmount;
+  if (!localAgent) {
+    return res.status(404).json({ error: "حساب الوكيل غير موجود محلياً" });
+  }
 
-  // Generate real transfer log
-  const newLog: AgentTransferLog = {
-    id: `tx_${Date.now()}`,
-    senderId: "AGENT_9999",
-    senderName: "الوكيل المعتمد لصدى العرب",
-    receiverId: targetUserId,
-    receiverName: targetUser.name,
-    amount: transferAmount,
+  const agentRole = localAgent.role || "user";
+  if (agentRole !== "agent" && agentRole !== "admin") {
+    return res.status(403).json({ error: "المستخدم ليس لديه صلاحية وكيل شحن معتمد" });
+  }
+
+  if (localAgent.coins < transferAmount) {
+    return res.status(400).json({ error: "رصيد الوكيل غير كافي لإتمام هذه العملية" });
+  }
+
+  if (!localReceiver) {
+    return res.status(404).json({ error: "معرف حساب العميل غير موجود في صدى العرب" });
+  }
+
+  localAgent.coins -= transferAmount;
+  localReceiver.coins += transferAmount;
+
+  const localLog = {
+    id: `atl_${Date.now()}`,
+    agent_id,
+    agent_name: localAgent.name,
+    receiver_id,
+    receiver_name: localReceiver.name,
+    coins_amount: transferAmount,
     timestamp: new Date().toISOString()
   };
 
-  db.transactions.unshift(newLog);
-  saveDb(db);
+  if (!localDb.agentTransferLogs) {
+    localDb.agentTransferLogs = [];
+  }
+  localDb.agentTransferLogs.unshift(localLog);
 
-  // Broadcast real-time database updates to WebSockets
-  broadcastToRoom("room_1", {
-    type: "agent_balance_update",
-    agentBalance: db.agentBalance,
-    transactions: db.transactions,
-    targetUserId,
-    targetUserCoins: targetUser.coins
-  });
-  broadcastToRoom("room_2", {
-    type: "agent_balance_update",
-    agentBalance: db.agentBalance,
-    transactions: db.transactions,
-    targetUserId,
-    targetUserCoins: targetUser.coins
-  });
-  broadcastToRoom("room_3", {
-    type: "agent_balance_update",
-    agentBalance: db.agentBalance,
-    transactions: db.transactions,
-    targetUserId,
-    targetUserCoins: targetUser.coins
+  localDb.transactions.unshift({
+    id: localLog.id,
+    senderId: agent_id,
+    senderName: localAgent.name,
+    receiverId: receiver_id,
+    receiverName: localReceiver.name,
+    amount: transferAmount,
+    timestamp: localLog.timestamp
   });
 
-  res.json({
+  saveDb(localDb);
+
+  const broadcastMsg = {
+    type: "agent_transfer_update",
+    agentId: agent_id,
+    agentBalance: localAgent.coins,
+    receiverId: receiver_id,
+    receiverBalance: localReceiver.coins,
+    log: localLog
+  };
+  broadcastToRoom("room_1", broadcastMsg);
+  broadcastToRoom("room_2", broadcastMsg);
+  broadcastToRoom("room_3", broadcastMsg);
+
+  return res.json({
+    success: true,
+    message: `تم شحن ${transferAmount} كوينز بنجاح إلى ${localReceiver.name}`,
+    agent_balance: localAgent.coins,
+    receiver_balance: localReceiver.coins
+  });
+});
+
+// Legacy backward-compatible redirect
+app.post("/api/agent/transfer", async (req, res) => {
+  const { targetUserId, amount } = req.body;
+  // Redirect to new agent transfer handler with Khalid Alharbi (1004) as the agent
+  req.body.agent_id = "1004";
+  req.body.receiver_id = targetUserId;
+  req.body.coins_amount = amount;
+  
+  // Directly forward the request internally or process it similarly
+  const localDb = getDb();
+  const localAgent = localDb.users.find(u => u.id === "1004");
+  const localReceiver = localDb.users.find(u => u.id === targetUserId);
+
+  if (!localAgent || !localReceiver) {
+    return res.status(400).json({ error: "فشل التحويل: حسابات غير صالحة" });
+  }
+
+  localAgent.coins = Math.max(0, localAgent.coins - Number(amount));
+  localReceiver.coins += Number(amount);
+  saveDb(localDb);
+
+  return res.json({
     success: true,
     message: "تم شحن الكوينزات بنجاح!",
-    agentBalance: db.agentBalance,
-    targetUser,
-    transaction: newLog
+    agentBalance: localAgent.coins,
+    targetUser: localReceiver
   });
 });
 
 // ==================== NEW VOICE ROOM API ENDPOINTS ====================
 app.post("/api/rooms/create", async (req, res) => {
-  const { room_name, owner_id } = req.body;
+  const { room_name, owner_id, is_private, password } = req.body;
   const tencent_room_id = Math.floor(Math.random() * 1000000);
   
   const fDb = getFirestoreDb();
@@ -400,9 +817,10 @@ app.post("/api/rooms/create", async (req, res) => {
         room_name,
         owner_id,
         tencent_room_id,
-        is_private: false,
+        is_private: !!is_private,
+        room_password: password || "",
         max_seats: 8,
-        created_at: (admin as any).firestore.FieldValue.serverTimestamp()
+        created_at: FieldValue.serverTimestamp()
       });
       
       // Create seats
@@ -436,7 +854,8 @@ app.post("/api/rooms/create", async (req, res) => {
     name: room_name,
     hostName: owner_id,
     hostAvatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
-    isPrivate: false,
+    isPrivate: !!is_private,
+    password: password || "",
     level: 1,
     xp: 0,
     activeUsersCount: 1,
@@ -619,7 +1038,7 @@ app.post("/api/gifts/send", async (req, res) => {
             sender_xp: 0,
             charm_xp: 0,
             badges: [],
-            created_at: (admin as any).firestore.FieldValue.serverTimestamp()
+            created_at: FieldValue.serverTimestamp()
           });
           senderBalance = 10000;
           currentSenderXp = 0;
@@ -690,7 +1109,7 @@ app.post("/api/gifts/send", async (req, res) => {
               sender_xp: 0,
               charm_xp: gift.coin_price,
               badges: updatedReceiverBadges,
-              created_at: (admin as any).firestore.FieldValue.serverTimestamp()
+              created_at: FieldValue.serverTimestamp()
             });
           }
         }
@@ -714,7 +1133,7 @@ app.post("/api/gifts/send", async (req, res) => {
           gift_id,
           gift_name: gift.gift_name,
           coin_price: gift.coin_price,
-          timestamp: (admin as any).firestore.FieldValue.serverTimestamp()
+          timestamp: FieldValue.serverTimestamp()
         });
 
         return { senderBalance: newSenderBalance, newSenderXp, newVipLevel, updatedSenderBadges };
@@ -924,7 +1343,7 @@ app.post("/api/clans/create", async (req, res) => {
           clan_logo: clan_logo_url,
           owner_id,
           total_xp: 0,
-          created_at: (admin as any).firestore.FieldValue.serverTimestamp()
+          created_at: FieldValue.serverTimestamp()
         });
       });
 
@@ -1040,6 +1459,49 @@ app.get("/api/agora/token", (req, res) => {
     createdAt: new Date().toISOString()
   });
 });
+
+// Tencent Cloud TRTC Token Generator Endpoint (Generate UserSig)
+app.post("/api/auth/tencent-token", (req, res) => {
+  const { userId, room_id } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: "معرف المستخدم (userId) مطلوب" });
+  }
+
+  const sdkAppId = Number(process.env.TENCENT_SDK_APP_ID) || 1400000000;
+  const secretKey = process.env.TENCENT_SECRET_KEY || "your_mock_secret_key_for_testing_purposes";
+  const expire = 86400; // 24 hours
+
+  try {
+    const TLSSigAPIv2 = require("tls-sig-api-v2");
+    const api = new TLSSigAPIv2.Api(sdkAppId, secretKey);
+    const userSig = api.genUserSig(userId, expire);
+
+    return res.json({
+      success: true,
+      sdkAppId,
+      userId,
+      userSig,
+      room_id: room_id || "sada_trtc_room",
+      expire
+    });
+  } catch (e: any) {
+    console.warn("Tencent TLSSigAPIv2 generation failed, using fallback:", e.message || e);
+    const crypto = require("crypto");
+    const mockSigInput = `${sdkAppId}:${userId}:${Date.now()}`;
+    const mockSig = crypto.createHmac("sha256", secretKey).update(mockSigInput).digest("base64");
+
+    return res.json({
+      success: true,
+      sdkAppId,
+      userId,
+      userSig: mockSig,
+      room_id: room_id || "sada_trtc_room",
+      expire,
+      isMock: true
+    });
+  }
+});
+
 
 // ==================== FOLLOW & PROFILE & PRIVATE MESSAGING ENDPOINTS ====================
 
@@ -1179,6 +1641,9 @@ app.post("/api/messages", (req, res) => {
 
 // Setup Vite / Static Files handling after API routes
 async function startApp() {
+  // Run the Firestore connection and permission check on boot
+  await checkFirestoreAccess();
+
   if (process.env.NODE_ENV !== "production") {
     // Development mode
     const vite = await createViteServer({

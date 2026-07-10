@@ -13,154 +13,28 @@ export interface DatabaseSchema {
   giftLogs?: any[];
   clans?: any[];
   badges?: any[];
+  agentsHub?: {
+    agent_id: string;
+    agent_name: string;
+    contact_whatsapp: string;
+    is_active: boolean;
+  }[];
+  agentTransferLogs?: {
+    id: string;
+    agent_id: string;
+    agent_name: string;
+    receiver_id: string;
+    receiver_name: string;
+    coins_amount: number;
+    timestamp: string;
+  }[];
 }
 
-const DEFAULT_USERS: AppUser[] = [
-  {
-    id: '1001',
-    name: 'أحمد العتيبي',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120',
-    level: 15,
-    coins: 450,
-    xp: 2400,
-    isAgent: true,
-    bio: 'المدير العام ومؤسس صدى العرب ☕ أهلاً بالجميع في ديوانيتنا.',
-    followers: [],
-    following: []
-  },
-  {
-    id: '1002',
-    name: 'سارة القحطاني',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120',
-    level: 28,
-    coins: 1200,
-    xp: 5600,
-    bio: 'شاعرة ومحبة للتراث العربي الأصيل 📜✨ صدى صوتكم هنا.',
-    followers: [],
-    following: []
-  },
-  {
-    id: '1003',
-    name: 'ياسر الشمري',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=120',
-    level: 8,
-    coins: 75,
-    xp: 850,
-    bio: 'محب للتعارف والدردشة الطيبة والقهوة السعودية ☕🇸🇦',
-    followers: [],
-    following: []
-  },
-  {
-    id: '1004',
-    name: 'خالد الحربي',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
-    level: 34,
-    coins: 3500,
-    xp: 9800,
-    bio: 'وكيل الدعم المعتمد 💎 تواصل معي للاستفسارات الرسمية.',
-    followers: [],
-    following: []
-  },
-  {
-    id: '1005',
-    name: 'ريم الدوسري',
-    avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=120',
-    level: 4,
-    coins: 10,
-    xp: 150,
-    bio: 'عضوة جديدة ومتحمسة لتكوين صداقات حقيقية في صدى العرب ⭐',
-    followers: [],
-    following: []
-  },
-];
+const DEFAULT_USERS: AppUser[] = [];
 
-const DEFAULT_ROOMS: VoiceRoom[] = [
-  {
-    id: 'room_1',
-    name: 'مجلس ديوانية العرب ☕',
-    hostName: 'أحمد العتيبي',
-    hostAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120',
-    isPrivate: false,
-    level: 12,
-    xp: 1800,
-    activeUsersCount: 24,
-    seats: [
-      { index: 0, userId: '1001', isMuted: false, isLocked: false },
-      { index: 1, userId: '1002', isMuted: false, isLocked: false },
-      { index: 2, userId: '1003', isMuted: true, isLocked: false },
-      { index: 3, userId: null, isMuted: false, isLocked: false },
-      { index: 4, userId: '1004', isMuted: false, isLocked: false },
-      { index: 5, userId: null, isMuted: false, isLocked: true },
-      { index: 6, userId: null, isMuted: false, isLocked: false },
-      { index: 7, userId: null, isMuted: false, isLocked: false },
-      { index: 8, userId: null, isMuted: false, isLocked: false },
-    ],
-  },
-  {
-    id: 'room_2',
-    name: 'سهرة الطرب الأصيل 🎶',
-    hostName: 'خالد الحربي',
-    hostAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
-    isPrivate: false,
-    level: 25,
-    xp: 5400,
-    activeUsersCount: 89,
-    seats: [
-      { index: 0, userId: '1004', isMuted: false, isLocked: false },
-      { index: 1, userId: '1001', isMuted: false, isLocked: false },
-      { index: 2, userId: '1002', isMuted: false, isLocked: false },
-      { index: 3, userId: '1003', isMuted: false, isLocked: false },
-      { index: 4, userId: null, isMuted: false, isLocked: false },
-      { index: 5, userId: null, isMuted: false, isLocked: false },
-      { index: 6, userId: null, isMuted: false, isLocked: false },
-      { index: 7, userId: null, isMuted: false, isLocked: false },
-      { index: 8, userId: null, isMuted: false, isLocked: false },
-    ],
-  },
-  {
-    id: 'room_3',
-    name: 'مجلس سري خاص 🔒',
-    hostName: 'سارة القحطاني',
-    hostAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120',
-    isPrivate: true,
-    password: '123',
-    level: 8,
-    xp: 900,
-    activeUsersCount: 5,
-    seats: [
-      { index: 0, userId: '1002', isMuted: false, isLocked: false },
-      { index: 1, userId: '1005', isMuted: false, isLocked: false },
-      { index: 2, userId: null, isMuted: false, isLocked: false },
-      { index: 3, userId: null, isMuted: false, isLocked: false },
-      { index: 4, userId: null, isMuted: false, isLocked: false },
-      { index: 5, userId: null, isMuted: false, isLocked: false },
-      { index: 6, userId: null, isMuted: false, isLocked: false },
-      { index: 7, userId: null, isMuted: false, isLocked: false },
-      { index: 8, userId: null, isMuted: false, isLocked: false },
-    ],
-  },
-];
+const DEFAULT_ROOMS: VoiceRoom[] = [];
 
-const DEFAULT_TRANSACTIONS: AgentTransferLog[] = [
-  {
-    id: 'tx_1',
-    senderId: 'AGENT_9999',
-    senderName: 'الوكيل المعتمد لصدى العرب',
-    receiverId: '1001',
-    receiverName: 'أحمد العتيبي',
-    amount: 1500,
-    timestamp: new Date(Date.now() - 3600000 * 2).toISOString()
-  },
-  {
-    id: 'tx_2',
-    senderId: 'AGENT_9999',
-    senderName: 'الوكيل المعتمد لصدى العرب',
-    receiverId: '1002',
-    receiverName: 'سارة القحطاني',
-    amount: 3000,
-    timestamp: new Date(Date.now() - 3600000 * 5).toISOString()
-  }
-];
+const DEFAULT_TRANSACTIONS: AgentTransferLog[] = [];
 
 export function initDb(): DatabaseSchema {
   if (!fs.existsSync(DB_FILE)) {
@@ -188,6 +62,25 @@ export function initDb(): DatabaseSchema {
     if (!parsed.clans) {
       parsed.clans = [];
     }
+    if (!parsed.agentsHub) {
+      parsed.agentsHub = [
+        {
+          agent_id: "1004",
+          agent_name: "خالد الحربي (الوكيل المعتمد)",
+          contact_whatsapp: "https://wa.me/966500000000",
+          is_active: true
+        },
+        {
+          agent_id: "1001",
+          agent_name: "أحمد العتيبي (الوكيل الذهبي)",
+          contact_whatsapp: "https://wa.me/966511111111",
+          is_active: true
+        }
+      ];
+    }
+    if (!parsed.agentTransferLogs) {
+      parsed.agentTransferLogs = [];
+    }
     if (!parsed.badges) {
       parsed.badges = [
         { badgeId: 'diamond_supporter', badgeName: 'الشاحن الماسي', badgeIcon: '💎', unlockCriteria: 'إرسال هدايا بقيمة 50,000 كوينز' },
@@ -195,17 +88,26 @@ export function initDb(): DatabaseSchema {
         { badgeId: 'loyal_member', badgeName: 'عضو القبيلة', badgeIcon: '🛡️', unlockCriteria: 'الانضمام إلى عائلة نشطة' }
       ];
     }
-    parsed.users = parsed.users.map(u => ({
-      ...u,
-      bio: u.bio !== undefined ? u.bio : 'عضو مميز في صدى العرب ☕',
-      followers: Array.isArray(u.followers) ? u.followers : [],
-      following: Array.isArray(u.following) ? u.following : [],
-      clanId: u.clanId || undefined,
-      senderXp: u.senderXp !== undefined ? u.senderXp : 0,
-      charmXp: u.charmXp !== undefined ? u.charmXp : 0,
-      badges: Array.isArray(u.badges) ? u.badges : [],
-      vipLevel: u.vipLevel !== undefined ? u.vipLevel : 1
-    }));
+    parsed.users = parsed.users.map(u => {
+      let r = u.role;
+      if (!r) {
+        if (u.id === '1001') r = 'admin';
+        else if (u.id === '1004' || u.isAgent) r = 'agent';
+        else r = 'user';
+      }
+      return {
+        ...u,
+        role: r,
+        bio: u.bio !== undefined ? u.bio : 'عضو مميز في صدى العرب ☕',
+        followers: Array.isArray(u.followers) ? u.followers : [],
+        following: Array.isArray(u.following) ? u.following : [],
+        clanId: u.clanId || undefined,
+        senderXp: u.senderXp !== undefined ? u.senderXp : 0,
+        charmXp: u.charmXp !== undefined ? u.charmXp : 0,
+        badges: Array.isArray(u.badges) ? u.badges : [],
+        vipLevel: u.vipLevel !== undefined ? u.vipLevel : 1
+      };
+    });
 
     return parsed;
   } catch (error) {

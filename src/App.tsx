@@ -41,7 +41,9 @@ import {
   Phone,
   Mail,
   UserCheck,
-  Wifi
+  Wifi,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import {
   deriveRoomKey,
@@ -62,6 +64,15 @@ import {
 } from './data/mockData';
 import { DART_BLUEPRINTS } from './data/dartBlueprints';
 import { AppUser, VoiceRoom, Gift, AgentTransferLog, FolderNode, VoiceSeat, PrivateMessage } from './types';
+import { auth } from './lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged,
+  signOut
+} from 'firebase/auth';
 
 // Interactive React subcomponent to dynamically decrypt and display messages safely
 const EncryptedMessageText = ({ 
@@ -138,6 +149,7 @@ export default function App() {
   const [activeRoom, setActiveRoom] = useState<VoiceRoom | null>(null);
   const [transactions, setTransactions] = useState<AgentTransferLog[]>(INITIAL_TRANSACTIONS);
   const [agentBalance, setAgentBalance] = useState<number>(248350);
+  const [agentsHub, setAgentsHub] = useState<{agent_id: string; agent_name: string; contact_whatsapp: string; is_active: boolean}[]>([]);
 
   // Profile, Direct Messaging & Follower States
   const [selectedProfileUser, setSelectedProfileUser] = useState<AppUser | null>(null);
@@ -148,6 +160,7 @@ export default function App() {
   const [newPrivateMessageInput, setNewPrivateMessageInput] = useState('');
   const [isEditingBio, setIsEditingBio] = useState(false);
   const [bioEditValue, setBioEditValue] = useState('');
+  const [isAgentsHubOpen, setIsAgentsHubOpen] = useState(false);
 
   // App Simulator Screen Navigation: 'login' | 'explore' | 'room' | 'agent_pin' | 'agent_dashboard'
   const [currentScreen, setCurrentScreen] = useState<'login' | 'explore' | 'room' | 'agent_pin' | 'agent_dashboard'>('login');
@@ -160,6 +173,17 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [customName, setCustomName] = useState('');
   const [showOtpField, setShowOtpField] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Create Room modal states
+  const [isCreateRoomModalOpen, setIsCreateRoomModalOpen] = useState(false);
+  const [newRoomNameInput, setNewRoomNameInput] = useState('');
+  const [newRoomIsPrivate, setNewRoomIsPrivate] = useState(false);
+  const [newRoomPassword, setNewRoomPassword] = useState('');
+  const [newRoomError, setNewRoomError] = useState('');
+  const [newRoomLoading, setNewRoomLoading] = useState(false);
 
   // Explore Room Lock PIN state
   const [selectedLockedRoom, setSelectedLockedRoom] = useState<VoiceRoom | null>(null);
@@ -193,10 +217,127 @@ export default function App() {
   const [clientPublicKeyBase64, setClientPublicKeyBase64] = useState('');
   const [isE2EEDrawerOpen, setIsE2EEDrawerOpen] = useState(false);
 
+  // Gamification & clans / leaderboard states
+  const [exploreSubTab, setExploreSubTab] = useState<'planet' | 'clans' | 'leaderboard'>('planet');
+  const [liveLeaderboard, setLiveLeaderboard] = useState<{
+    senders: any[];
+    receivers: any[];
+    clans: any[];
+  } | null>(null);
+  const [newClanName, setNewClanName] = useState('');
+  const [newClanLogo, setNewClanLogo] = useState('🛡️');
+  const [isLeaderboardLoading, setIsLeaderboardLoading] = useState(false);
+
+  const fetchLiveLeaderboard = async () => {
+    setIsLeaderboardLoading(true);
+    try {
+      const res = await fetch('/api/leaderboard');
+      if (res.ok) {
+        const ct = res.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const data = await res.json();
+          setLiveLeaderboard(data);
+        } else {
+          console.warn('Expected JSON response from /api/leaderboard but received non-JSON');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch live leaderboard:', err);
+    } finally {
+      setIsLeaderboardLoading(false);
+    }
+  };
+
+
   const addE2eeLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setE2eeAuditLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 49)]);
   };
+
+  // Agora RTC Real-Time Communication Engine States
+  const [agoraStatus, setAgoraStatus] = useState<{
+    isInitialized: boolean;
+    role: 'ClientRoleAudience' | 'ClientRoleBroadcaster';
+    isLocalAudioPlaying: boolean;
+    isMuted: boolean;
+    appId: string | null;
+    token: string | null;
+    roomId: string | null;
+    logs: string[];
+    latency: number;
+  }>({
+    isInitialized: false,
+    role: 'ClientRoleAudience',
+    isLocalAudioPlaying: false,
+    isMuted: false,
+    appId: null,
+    token: null,
+    roomId: null,
+    logs: [],
+    latency: 18,
+  });
+
+  const addAgoraLog = (msg: string) => {
+    const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setAgoraStatus(prev => ({
+      ...prev,
+      logs: [`[${timestamp}] ${msg}`, ...prev.logs.slice(0, 29)]
+    }));
+  };
+
+  const initAgora = async (roomId: string) => {
+    if (!currentUser) return;
+    addAgoraLog(`جاري تهيئة محرك Agora RTC للغرفة الصوتية: ${roomId}`);
+    addAgoraLog(`AgoraRTC.createClient({ mode: "live", codec: "vp8" })`);
+    
+    try {
+      const response = await fetch('/api/auth/agora-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: roomId, uid: Number(currentUser.id) || 1000 + Math.floor(Math.random() * 9000), is_speaker: false })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const shortToken = data.token ? `${data.token.substring(0, 20)}...` : 'N/A';
+        addAgoraLog(`تم استدعاء API بنجاح لتوليد الـ RTC Token.`);
+        addAgoraLog(`التوكن المستلم: ${shortToken}`);
+        addAgoraLog(`الاتصال بقناة Agora: client.join("${data.appId}", "${roomId}", "${data.token}", ${data.uid})`);
+        addAgoraLog(`تحديد دور العضو كـ مستمع: client.setClientRole("ClientRoleAudience") (قراءة الصوت فقط دون فتح اللاقط)`);
+        
+        setAgoraStatus(prev => ({
+          ...prev,
+          isInitialized: true,
+          role: 'ClientRoleAudience',
+          isLocalAudioPlaying: false,
+          isMuted: false,
+          appId: data.appId,
+          token: data.token,
+          roomId: roomId,
+        }));
+      } else {
+        throw new Error('فشل جلب توكن Agora من السيرفر');
+      }
+    } catch (e: any) {
+      addAgoraLog(`خطأ في تهيئة Agora RTC: ${e.message || e}`);
+    }
+  };
+
+  const stopAgora = () => {
+    addAgoraLog(`إغلاق اتصال Agora ومغادرة القناة الصوتية.`);
+    addAgoraLog(`client.leave() & localAudioTrack.close()`);
+    setAgoraStatus(prev => ({
+      ...prev,
+      isInitialized: false,
+      role: 'ClientRoleAudience',
+      isLocalAudioPlaying: false,
+      isMuted: false,
+      appId: null,
+      token: null,
+      roomId: null,
+    }));
+  };
+
 
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -209,38 +350,67 @@ export default function App() {
     try {
       const usersRes = await fetch('/api/users');
       if (usersRes.ok) {
-        const usersData = await usersRes.json();
-        setUsers(usersData);
-        if (currentUser) {
-          const matchedUser = usersData.find((u: any) => u.id === currentUser.id);
-          if (matchedUser) {
-            setCurrentUser(matchedUser);
+        const ct = usersRes.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const usersData = await usersRes.json();
+          setUsers(usersData);
+          if (currentUser) {
+            const matchedUser = usersData.find((u: any) => u.id === currentUser.id);
+            if (matchedUser) {
+              setCurrentUser(matchedUser);
+            }
           }
+        } else {
+          console.warn('Expected JSON from /api/users but received non-JSON');
         }
       }
 
       const roomsRes = await fetch('/api/rooms');
       if (roomsRes.ok) {
-        const roomsData = await roomsRes.json();
-        setRooms(roomsData);
-        if (activeRoom) {
-          const matchedRoom = roomsData.find((r: any) => r.id === activeRoom.id);
-          if (matchedRoom) {
-            setActiveRoom(matchedRoom);
+        const ct = roomsRes.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const roomsData = await roomsRes.json();
+          setRooms(roomsData);
+          if (activeRoom) {
+            const matchedRoom = roomsData.find((r: any) => r.id === activeRoom.id);
+            if (matchedRoom) {
+              setActiveRoom(matchedRoom);
+            }
           }
+        } else {
+          console.warn('Expected JSON from /api/rooms but received non-JSON');
         }
       }
 
       const txRes = await fetch('/api/transactions');
       if (txRes.ok) {
-        const txData = await txRes.json();
-        setTransactions(txData);
+        const ct = txRes.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const txData = await txRes.json();
+          setTransactions(txData);
+        } else {
+          console.warn('Expected JSON from /api/transactions but received non-JSON');
+        }
       }
 
       const agentRes = await fetch('/api/agent/balance');
       if (agentRes.ok) {
-        const agentData = await agentRes.json();
-        setAgentBalance(agentData.balance);
+        const ct = agentRes.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const agentData = await agentRes.json();
+          setAgentBalance(agentData.balance);
+        } else {
+          console.warn('Expected JSON from /api/agent/balance but received non-JSON');
+        }
+      }
+
+      const hubRes = await fetch('/api/agents/hub');
+      if (hubRes.ok) {
+        const ct = hubRes.headers.get('content-type');
+        if (ct && ct.includes('application/json')) {
+          const hubData = await hubRes.json();
+          setAgentsHub(hubData);
+        }
       }
     } catch (e) {
       console.error('Error fetching database states:', e);
@@ -253,6 +423,41 @@ export default function App() {
     const interval = setInterval(fetchDbStates, 5000);
     return () => clearInterval(interval);
   }, [currentUser?.id, activeRoom?.id]);
+
+  // Listen for Firebase auth state changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // Authenticated. Sync to backend database
+        const defaultName = firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'مستشار صدى';
+        const defaultAvatar = firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
+        try {
+          const res = await fetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: firebaseUser.uid,
+              name: defaultName,
+              avatar: defaultAvatar
+            })
+          });
+          if (res.ok) {
+            const loggedUser = await res.json();
+            setCurrentUser(loggedUser);
+            setCurrentScreen('explore');
+            await fetchDbStates();
+          }
+        } catch (err) {
+          console.error("Error syncing authenticated user:", err);
+        }
+      } else {
+        // Logged out
+        setCurrentUser(null);
+        setCurrentScreen('login');
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Fetch Private Messages
   const fetchPrivateMessages = async () => {
@@ -676,6 +881,59 @@ export default function App() {
     return () => stopVoiceCapture();
   }, [currentScreen, activeRoom?.seats, currentUser?.id]);
 
+  // Agora RTC Synchronization with Seat changes (Broadcaster / Audience role switching & mute)
+  useEffect(() => {
+    if (currentScreen !== 'room' || !activeRoom || !currentUser || !agoraStatus.isInitialized) {
+      if (agoraStatus.isInitialized && currentScreen !== 'room') {
+        stopAgora();
+      }
+      return;
+    }
+
+    const mySeat = activeRoom.seats.find(s => s.userId === currentUser.id);
+
+    if (mySeat) {
+      // User is on a seat -> ClientRoleBroadcaster role
+      if (agoraStatus.role !== 'ClientRoleBroadcaster') {
+        addAgoraLog(`تحديث المقعد: تم كشف صعودك للمقعد رقم ${mySeat.index + 1}`);
+        addAgoraLog(`تغيير الدور إلى متحدث: client.setClientRole("ClientRoleBroadcaster")`);
+        addAgoraLog(`تفعيل المايك وبدء بث المسار الصوتي: localAudioTrack.setEnabled(true) & enableAudio()`);
+        
+        setAgoraStatus(prev => ({
+          ...prev,
+          role: 'ClientRoleBroadcaster',
+          isLocalAudioPlaying: true,
+          isMuted: mySeat.isMuted
+        }));
+      } else {
+        // Already Broadcaster, check mute state change
+        if (agoraStatus.isMuted !== mySeat.isMuted) {
+          addAgoraLog(`تحديث إداري: تم ${mySeat.isMuted ? 'كتم (Mute)' : 'إلغاء كتم'} صوتك من قبل مالك المجلس.`);
+          addAgoraLog(`تطبيق كتم المايك: client.muteLocalAudioStream(${mySeat.isMuted})`);
+          
+          setAgoraStatus(prev => ({
+            ...prev,
+            isMuted: mySeat.isMuted
+          }));
+        }
+      }
+    } else {
+      // User is not on a seat -> ClientRoleAudience role
+      if (agoraStatus.role !== 'ClientRoleAudience') {
+        addAgoraLog(`تحديث المقعد: تم كشف نزولك من المقاعد الصوتية.`);
+        addAgoraLog(`إيقاف بث المايك والمسار الصوتي: localAudioTrack.setEnabled(false)`);
+        addAgoraLog(`إرجاع الدور إلى مستمع: client.setClientRole("ClientRoleAudience")`);
+        
+        setAgoraStatus(prev => ({
+          ...prev,
+          role: 'ClientRoleAudience',
+          isLocalAudioPlaying: false,
+          isMuted: false
+        }));
+      }
+    }
+  }, [activeRoom?.seats, currentScreen, agoraStatus.isInitialized, currentUser?.id]);
+
   // Relocated states to the top of the App component to prevent block-scoped reference errors.
 
   // Architectural Explorer States
@@ -694,6 +952,112 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
   const [speakingSeatIndex, setSpeakingSeatIndex] = useState<number | null>(null);
+  const [speakingVolume, setSpeakingVolume] = useState<number>(0);
+  const [isRoomAudioDeafened, setIsRoomAudioDeafened] = useState(false);
+
+  // Real-time microphone level capture for currentUser when they are unmuted on a seat
+  const [realUserMicSpeaking, setRealUserMicSpeaking] = useState(false);
+  const [realUserMicVolume, setRealUserMicVolume] = useState(0);
+
+  useEffect(() => {
+    // Check if current user is unmuted on a seat
+    if (!activeRoom || !currentUser || currentScreen !== 'room') {
+      setRealUserMicSpeaking(false);
+      setRealUserMicVolume(0);
+      return;
+    }
+    const userSeat = activeRoom.seats.find(s => s.userId === currentUser.id);
+    const isUnmutedOnSeat = userSeat && !userSeat.isMuted;
+
+    if (!isUnmutedOnSeat) {
+      setRealUserMicSpeaking(false);
+      setRealUserMicVolume(0);
+      return;
+    }
+
+    let audioContext: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let microphone: MediaStreamAudioSourceNode | null = null;
+    let javascriptNode: ScriptProcessorNode | null = null;
+    let stream: MediaStream | null = null;
+    let active = true;
+
+    async function startMic() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (!active) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        audioContext = new AudioContextClass();
+        analyser = audioContext.createAnalyser();
+        microphone = audioContext.createMediaStreamSource(stream);
+        javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+
+        analyser.smoothingTimeConstant = 0.8;
+        analyser.fftSize = 1024;
+
+        microphone.connect(analyser);
+        analyser.connect(javascriptNode);
+        javascriptNode.connect(audioContext.destination);
+
+        javascriptNode.onaudioprocess = () => {
+          if (!active) return;
+          const array = new Uint8Array(analyser!.frequencyBinCount);
+          analyser!.getByteFrequencyData(array);
+          let values = 0;
+
+          const length = array.length;
+          for (let i = 0; i < length; i++) {
+            values += array[i];
+          }
+
+          const average = values / length;
+          // average ranges typically from 0 to 128. Threshold of 8 for speech.
+          if (average > 8) {
+            setRealUserMicSpeaking(true);
+            setRealUserMicVolume(average);
+          } else {
+            setRealUserMicSpeaking(false);
+            setRealUserMicVolume(0);
+          }
+        };
+      } catch (err) {
+        console.warn('Microphone permission denied or not supported:', err);
+      }
+    }
+
+    startMic();
+
+    return () => {
+      active = false;
+      if (javascriptNode) {
+        try { javascriptNode.disconnect(); } catch (e) {}
+      }
+      if (microphone) {
+        try { microphone.disconnect(); } catch (e) {}
+      }
+      if (analyser) {
+        try { analyser.disconnect(); } catch (e) {}
+      }
+      if (audioContext && audioContext.state !== 'closed') {
+        try { audioContext.close(); } catch (e) {}
+      }
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [activeRoom, currentUser, currentScreen]);
+
+  // Fluctuates speaking volume to simulate dynamic vocal pitch/volume changes
+  useEffect(() => {
+    const volInterval = setInterval(() => {
+      setSpeakingVolume(Math.floor(Math.random() * 65) + 35); // volume fluctuates between 35 and 100
+    }, 150);
+    return () => clearInterval(volInterval);
+  }, []);
 
   // Native Mobile UI States (Agora RTC status, Bottom sheet draw lists)
   const [isGiftDrawerOpen, setIsGiftDrawerOpen] = useState(false);
@@ -708,6 +1072,13 @@ export default function App() {
   const [selectedGift, setSelectedGift] = useState<Gift | null>(null);
   const [selectedRecipientSeatIndex, setSelectedRecipientSeatIndex] = useState<number | 'all'>('all');
   const [dashboardTab, setDashboardTab] = useState<'party' | 'games' | 'explore' | 'messages' | 'profile'>('party');
+
+  // Fetch live leaderboard and clans when entering the Explore tab
+  useEffect(() => {
+    if (currentScreen === 'explore' && dashboardTab === 'explore') {
+      fetchLiveLeaderboard();
+    }
+  }, [currentScreen, dashboardTab, exploreSubTab]);
   const [isDailyBonusOpen, setIsDailyBonusOpen] = useState(false);
   const [dailyBonusClaimed, setDailyBonusClaimed] = useState(false);
   const [driftingBottleMode, setDriftingBottleMode] = useState<'idle' | 'writing' | 'reading'>('idle');
@@ -781,15 +1152,15 @@ export default function App() {
 
   // WebRTC Speaking simulation effect
   useEffect(() => {
-    if (currentScreen !== 'room' || !activeRoom) {
+    if (currentScreen !== 'room' || !activeRoom || isRoomAudioDeafened) {
       setSpeakingSeatIndex(null);
       return;
     }
 
     const speakerInterval = setInterval(() => {
-      // Find indexes of occupied seats
+      // Find indexes of occupied seats that are not muted
       const occupiedSeatIndexes = activeRoom.seats
-        .filter(seat => seat.userId !== null)
+        .filter(seat => seat.userId !== null && !seat.isMuted)
         .map(seat => seat.index);
 
       if (occupiedSeatIndexes.length > 0) {
@@ -806,7 +1177,7 @@ export default function App() {
     }, 2800);
 
     return () => clearInterval(speakerInterval);
-  }, [currentScreen, activeRoom]);
+  }, [currentScreen, activeRoom, isRoomAudioDeafened]);
 
   // Dynamic Room Interactive Live Streams simulation
   useEffect(() => {
@@ -954,6 +1325,7 @@ export default function App() {
   const loadActiveRoom = (room: VoiceRoom) => {
     setActiveRoom(room);
     setCurrentScreen('room');
+    initAgora(room.id); // Initialize Agora RTC connection
     // Trigger entrance animation for high-level user
     if (currentUser && currentUser.level >= 10) {
       triggerVipEntrance(currentUser.name, currentUser.level);
@@ -1218,13 +1590,13 @@ export default function App() {
     }
 
     // Process Transfer on the backend REST API
-    fetch('/api/agent/transfer', {
+    fetch('/api/agents/transfer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        targetUserId: transferTargetUser.id,
-        amount: amount,
-        pin: transferPin
+        agent_id: currentUser?.id || '1004',
+        receiver_id: transferTargetUser.id,
+        coins_amount: amount
       })
     })
     .then(res => {
@@ -1616,133 +1988,180 @@ export default function App() {
 
                   {/* Auth Content */}
                   <div className="w-full space-y-4 max-w-sm px-2">
-                    {loginMethod === null ? (
-                      <div className="space-y-3.5">
-                        {/* Google Sign-in Button */}
+                    {/* Google Sign-in Button */}
+                    <button
+                      onClick={async () => {
+                        setAuthLoading(true);
+                        setAuthError('');
+                        try {
+                          const provider = new GoogleAuthProvider();
+                          await signInWithPopup(auth, provider);
+                        } catch (err: any) {
+                          setAuthError(err.message || 'فشل تسجيل الدخول عبر Google');
+                        } finally {
+                          setAuthLoading(false);
+                        }
+                      }}
+                      disabled={authLoading}
+                      className="w-full bg-[#2D2D2D] hover:bg-[#1E1E1E] text-white py-3 rounded-full text-xs font-bold flex items-center justify-center gap-3 transition shadow-md active:scale-[0.98] cursor-pointer disabled:opacity-55"
+                      id="login-btn-google"
+                    >
+                      <svg className="w-4 h-4 text-white fill-current" viewBox="0 0 24 24">
+                        <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114A5.69 5.69 0 0 1 8.24 12.8a5.69 5.69 0 0 1 5.751-5.714c1.47 0 2.825.534 3.882 1.411l3.14-3.142A9.9 9.9 0 0 0 13.991 3c-5.523 0-10 4.477-10 10s4.477 10 10 10c5.37 0 9.878-3.791 10.009-9.143H12.24Z" />
+                      </svg>
+                      <span>{authLoading ? 'جاري الاتصال...' : 'الدخول السريع بواسطة Google'}</span>
+                    </button>
+
+                    <div className="relative flex py-2 items-center">
+                      <div className="flex-grow border-t border-[#DCD7C9]/60"></div>
+                      <span className="flex-shrink mx-4 text-[#8B7E74] text-[10px] font-bold">أو عن طريق البريد الإلكتروني</span>
+                      <div className="flex-grow border-t border-[#DCD7C9]/60"></div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-2xl border border-[#DCD7C9]/60 shadow-md space-y-4">
+                      {/* Tabs */}
+                      <div className="flex bg-[#FAF6EB] p-1 rounded-xl">
                         <button
-                          onClick={() => handleSignUpAndLogin('عبدالرحمن الخليجي')}
-                          className="w-full bg-[#2D2D2D] hover:bg-[#1E1E1E] text-white py-3 rounded-full text-xs font-bold flex items-center justify-center gap-3 transition shadow-md active:scale-[0.98] cursor-pointer"
-                          id="login-btn-google"
+                          type="button"
+                          onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                          className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                            authMode === 'login'
+                              ? 'bg-white text-[#7C3AED] shadow-sm'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
                         >
-                          <svg className="w-4 h-4 text-white fill-current" viewBox="0 0 24 24">
-                            <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114A5.69 5.69 0 0 1 8.24 12.8a5.69 5.69 0 0 1 5.751-5.714c1.47 0 2.825.534 3.882 1.411l3.14-3.142A9.9 9.9 0 0 0 13.991 3c-5.523 0-10 4.477-10 10s4.477 10 10 10c5.37 0 9.878-3.791 10.009-9.143H12.24Z" />
-                          </svg>
-                          <span>الدخول بواسطة Google</span>
+                          تسجيل دخول
                         </button>
-
-                        {/* Social / Email Logins Row */}
-                        <div className="flex justify-center items-center gap-5 pt-1">
-                          {/* Twitter / X */}
-                          <button
-                            onClick={() => handleSignUpAndLogin('بندر الفيصل')}
-                            className="w-12 h-12 rounded-full bg-[#E8F5FE] hover:bg-[#D0ECFC] flex items-center justify-center text-[#1DA1F2] transition hover:scale-105 active:scale-95 shadow-sm border border-[#E1EFFE] cursor-pointer"
-                            title="X / Twitter"
-                          >
-                            <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                            </svg>
-                          </button>
-
-                          {/* Quick ID Login */}
-                          <button
-                            onClick={() => {
-                              const randomNames = ['فارس نجد', 'ريم الرياض', 'سلطان العرب', 'غلا دبي', 'أبو فهد'];
-                              const chosenName = randomNames[Math.floor(Math.random() * randomNames.length)];
-                              handleSignUpAndLogin(chosenName);
-                            }}
-                            className="w-12 h-12 rounded-full bg-[#F3E8FF] hover:bg-[#E9D5FF] flex items-center justify-center text-[#9333EA] transition hover:scale-105 active:scale-95 shadow-sm border border-[#F3E8FF] cursor-pointer font-bold text-xs"
-                            title="الدخول السريع بالمعرف"
-                          >
-                            ID
-                          </button>
-
-                          {/* Custom Phone / Email Input Form Gate */}
-                          <button
-                            onClick={() => setLoginMethod('phone')}
-                            className="w-12 h-12 rounded-full bg-[#DCFCE7] hover:bg-[#BBF7D0] flex items-center justify-center text-[#16A34A] transition hover:scale-105 active:scale-95 shadow-sm border border-[#DCFCE7] cursor-pointer"
-                            title="رقم الهاتف والبريد"
-                          >
-                            <Mail className="w-5 h-5" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode('signup'); setAuthError(''); }}
+                          className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                            authMode === 'signup'
+                              ? 'bg-white text-[#7C3AED] shadow-sm'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          إنشاء حساب جديد
+                        </button>
                       </div>
-                    ) : (
-                      <div className="bg-white p-4 rounded-2xl border border-[#DCD7C9]/60 shadow-md space-y-3">
-                        <div className="flex justify-between items-center border-b border-slate-100 pb-2">
-                          <span className="text-xs font-bold text-[#4A3E3D]">
-                            {loginMethod === 'phone' ? 'تسجيل برقم الهاتف' : 'تسجيل بالبريد الإلكتروني'}
-                          </span>
-                          <button
-                            onClick={() => { setLoginMethod(null); setShowOtpField(false); }}
-                            className="text-[10px] text-[#7C3AED] font-bold hover:underline"
-                            id="login-back-btn"
-                          >
-                            رجوع
-                          </button>
-                        </div>
 
-                        {loginMethod === 'phone' && (
-                          <div className="space-y-2 text-[#4A3E3D]">
-                            {!showOtpField ? (
-                              <>
-                                <label className="text-[10px] text-slate-500 block text-right font-bold">رقم الهاتف الجوال</label>
-                                <input
-                                  type="tel"
-                                  placeholder="966 50 000 0000+"
-                                  value={phoneNumber}
-                                  onChange={(e) => setPhoneNumber(e.target.value)}
-                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-center text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
-                                />
-                                <button
-                                  onClick={() => {
-                                    if (phoneNumber.trim()) {
-                                      setShowOtpField(true);
-                                      alert('تم إرسال رمز التحقق SMS OTP المكون من 6 أرقام لهاتفك!');
-                                    } else {
-                                      alert('الرجاء كتابة رقم الهاتف أولاً');
-                                    }
-                                  }}
-                                  className="w-full bg-[#7C3AED] text-white py-2 rounded-lg text-xs font-bold transition cursor-pointer"
-                                  id="send-otp-btn"
-                                >
-                                  إرسال رمز التحقق SMS
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <div className="bg-emerald-50 text-emerald-700 text-[10px] p-2 rounded text-center border border-emerald-200">
-                                  تم إرسال رمز التحقق لهاتفك بنجاح
-                                </div>
-                                <label className="text-[10px] text-slate-500 block text-right font-bold">رمز التحقق SMS OTP</label>
-                                <input
-                                  type="text"
-                                  maxLength={6}
-                                  placeholder="أدخل رمز التحقق المكون من 6 أرقام"
-                                  value={smsOtp}
-                                  onChange={(e) => setSmsOtp(e.target.value)}
-                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-center text-[#4A3E3D] font-mono tracking-widest focus:outline-none focus:border-[#7C3AED]"
-                                />
-                                <label className="text-[10px] text-slate-500 block text-right mt-1 font-bold">الاسم المستعار في المجالس</label>
-                                <input
-                                  type="text"
-                                  placeholder="أدخل اسمك المستعار"
-                                  value={customName}
-                                  onChange={(e) => setCustomName(e.target.value)}
-                                  className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-lg p-2 text-xs text-right text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
-                                />
-                                <button
-                                  onClick={() => handleSignUpAndLogin(customName)}
-                                  className="w-full bg-emerald-600 text-white py-2 rounded-lg text-xs font-bold transition cursor-pointer"
-                                  id="confirm-otp-btn"
-                                >
-                                  تحقق ودخول المجلس 🔒
-                                </button>
-                              </>
-                            )}
+                      {authError && (
+                        <div className="bg-rose-50 text-rose-700 text-[10px] p-2.5 rounded-lg border border-rose-200 text-right leading-relaxed font-sans" dir="rtl">
+                          ⚠️ {authError}
+                        </div>
+                      )}
+
+                      <form
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          if (!email.trim() || !password.trim()) {
+                            setAuthError('الرجاء تعبئة جميع الحقول المطلوبة');
+                            return;
+                          }
+                          if (authMode === 'signup' && !customName.trim()) {
+                            setAuthError('الرجاء إدخال اسمك المستعار');
+                            return;
+                          }
+
+                          setAuthLoading(true);
+                          setAuthError('');
+                          try {
+                            if (authMode === 'signup') {
+                              // Create User
+                              const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+                              const firebaseUser = userCredential.user;
+                              const defaultAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`;
+                              
+                              // Create backend record
+                              const res = await fetch('/api/users', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  id: firebaseUser.uid,
+                                  name: customName.trim(),
+                                  avatar: defaultAvatar
+                                })
+                              });
+                              if (!res.ok) {
+                                throw new Error('فشل تسجيل الاسم المستعار في قواعد البيانات');
+                              }
+                            } else {
+                              // Login User
+                              await signInWithEmailAndPassword(auth, email.trim(), password);
+                            }
+                          } catch (err: any) {
+                            console.error(err);
+                            let arabicMsg = err.message;
+                            if (err.code === 'auth/email-already-in-use') {
+                              arabicMsg = 'هذا البريد الإلكتروني مسجل بالفعل بحساب آخر!';
+                            } else if (err.code === 'auth/weak-password') {
+                              arabicMsg = 'كلمة المرور ضعيفة للغاية! يجب أن تكون 6 خانات على الأقل.';
+                            } else if (err.code === 'auth/invalid-email') {
+                              arabicMsg = 'صيغة البريد الإلكتروني غير صحيحة.';
+                            } else if (err.code === 'auth/invalid-credential') {
+                              arabicMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
+                            }
+                            setAuthError(arabicMsg);
+                          } finally {
+                            setAuthLoading(false);
+                          }
+                        }}
+                        className="space-y-3.5 text-right font-sans"
+                      >
+                        {authMode === 'signup' && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 font-bold block">الاسم المستعار (Pseudonym)</label>
+                            <input
+                              type="text"
+                              required
+                              placeholder="أدخل اسمك المستعار (مثال: فارس نجد)"
+                              value={customName}
+                              onChange={(e) => setCustomName(e.target.value)}
+                              className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-xs text-right text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
+                            />
                           </div>
                         )}
-                      </div>
-                    )}
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-500 font-bold block">البريد الإلكتروني (Email)</label>
+                          <input
+                            type="email"
+                            required
+                            placeholder="yourname@domain.com"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-xs text-left text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-500 font-bold block">كلمة المرور (Password)</label>
+                          <input
+                            type="password"
+                            required
+                            placeholder="••••••••"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-xs text-left text-[#4A3E3D] focus:outline-none focus:border-[#7C3AED]"
+                          />
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={authLoading}
+                          className="w-full bg-[#7C3AED] hover:bg-[#6D28D9] text-white py-2.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                        >
+                          {authLoading ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>جاري المعالجة...</span>
+                            </>
+                          ) : (
+                            <span>{authMode === 'signup' ? 'إنشاء حساب حقيقي ودخول 🔒' : 'دخول المجلس الآمن 🔒'}</span>
+                          )}
+                        </button>
+                      </form>
+                    </div>
                   </div>
 
                   {/* Consent & Agreement */}
@@ -1812,7 +2231,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => { setCurrentUser(null); setCurrentScreen('login'); }}
+                        onClick={() => { signOut(auth).catch(err => console.error(err)); }}
                         className="bg-red-50 hover:bg-red-100 p-1.5 rounded-full text-red-500 border border-red-100 transition-all active:scale-90 cursor-pointer"
                         title="تسجيل الخروج"
                         id="logout-btn"
@@ -1918,17 +2337,34 @@ export default function App() {
 
                         {/* Floating Golden Microphone Create Room button */}
                         <div className="fixed bottom-20 left-4 z-40">
-                          <button
-                            onClick={() => {
-                              const rName = prompt('أدخل اسم مجلسك الصوتي الجديد:');
-                              if (rName) {
-                                alert(`🎉 تم إرسال طلب إنشاء مجلس "${rName}" بنجاح! سيقوم الدعم الفني باعتماده فوراً.`);
-                              }
-                            }}
-                            className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
-                          >
-                            <span>🎙️ إنشاء مجلس</span>
-                          </button>
+                          {(() => {
+                            const myRoom = rooms.find(r => r.owner_id === currentUser?.id);
+                            if (myRoom) {
+                              return (
+                                <button
+                                  onClick={() => setActiveRoom(myRoom)}
+                                  className="bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-600 hover:to-teal-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
+                                >
+                                  <span>🎙️ دخول مجلسي</span>
+                                </button>
+                              );
+                            } else {
+                              return (
+                                <button
+                                  onClick={() => {
+                                    setNewRoomNameInput('');
+                                    setNewRoomIsPrivate(false);
+                                    setNewRoomPassword('');
+                                    setNewRoomError('');
+                                    setIsCreateRoomModalOpen(true);
+                                  }}
+                                  className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
+                                >
+                                  <span>🎙️ إنشاء مجلس</span>
+                                </button>
+                              );
+                            }
+                          })()}
                         </div>
                       </div>
                     )}
@@ -2060,103 +2496,400 @@ export default function App() {
                     {dashboardTab === 'explore' && (
                       <div className="space-y-4 animate-fade-in" id="tab-panel-discover">
                         
-                        {/* Drifting Bottle and Ahlan Garden widgets */}
-                        <div className="grid grid-cols-2 gap-3">
-                          {/* Ocean Bottle */}
-                          <div 
-                            onClick={() => setDriftingBottleMode('writing')}
-                            className="bg-gradient-to-br from-cyan-400 to-blue-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
-                          >
-                            <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌊</span>
-                            <span className="text-2xl block">🍾</span>
-                            <h4 className="text-xs font-black">زجاجة الرسائل</h4>
-                            <p className="text-[9px] text-cyan-50">ارمِ سرك في البحر أو التقط زجاجة عشوائية!</p>
-                          </div>
-
-                          {/* Ahlan Garden */}
-                          <div 
-                            onClick={() => alert('🌱 بستان صدى العرب: ميزة زراعة الزهور ومبادلة البذور قادمة قريباً!')}
-                            className="bg-gradient-to-br from-emerald-400 to-teal-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
-                          >
-                            <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌸</span>
-                            <span className="text-2xl block">🌹</span>
-                            <h4 className="text-xs font-black">بستان صدى العرب</h4>
-                            <p className="text-[9px] text-emerald-50">اهتم بحديقتك واحصد كوينز مع الأصدقاء!</p>
-                          </div>
-                        </div>
-
-                        {/* Gift Gifting Podium Column Rankings */}
-                        <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-center space-y-4">
-                          <div>
-                            <h3 className="text-xs font-black text-[#4A3E3D]">🏆 لوحة شرف وهدايا مجالس صدى</h3>
-                            <p className="text-[9px] text-slate-500 mt-0.5">ترتيب الفرسان الأكثر جوداً وسخاءً هذا الشهر</p>
-                          </div>
-
-                          {/* 3D-Like Podium Columns */}
-                          <div className="flex justify-center items-end gap-3 pt-6 pb-2 min-h-[140px]">
-                            
-                            {/* Podium No.2 */}
-                            <div className="flex flex-col items-center w-20">
-                              <div className="relative">
-                                <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥈</span>
-                                <div className="w-10 h-10 rounded-full border-2 border-slate-300 p-0.5 bg-slate-50">
-                                  <img
-                                    src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120"
-                                    className="w-full h-full rounded-full object-cover"
-                                  />
-                                </div>
-                              </div>
-                              <span className="text-[9px] font-bold text-slate-700 mt-1 truncate w-16">سارة القحطاني</span>
-                              <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">98K كوينز</span>
-                              <div className="w-full bg-slate-200 h-10 rounded-t-lg mt-2 flex items-center justify-center font-bold text-slate-500 text-xs shadow-inner">
-                                2
-                              </div>
-                            </div>
-
-                            {/* Podium No.1 */}
-                            <div className="flex flex-col items-center w-22">
-                              <div className="relative -top-3 scale-110">
-                                <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xl animate-bounce">👑</span>
-                                <div className="w-11 h-11 rounded-full border-2 border-[#FFAE42] p-0.5 bg-amber-50">
-                                  <img
-                                    src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120"
-                                    className="w-full h-full rounded-full object-cover"
-                                  />
-                                </div>
-                              </div>
-                              <span className="text-[9px] font-black text-amber-600 mt-1 truncate w-18">أحمد العتيبي</span>
-                              <span className="text-[8px] text-amber-500 font-extrabold leading-none mt-0.5">125K كوينز</span>
-                              <div className="w-full bg-[#FFAE42] h-14 rounded-t-lg mt-2 flex items-center justify-center font-black text-white text-sm shadow">
-                                1
-                              </div>
-                            </div>
-
-                            {/* Podium No.3 */}
-                            <div className="flex flex-col items-center w-20">
-                              <div className="relative">
-                                <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥉</span>
-                                <div className="w-10 h-10 rounded-full border-2 border-amber-700 p-0.5 bg-amber-50/20">
-                                  <img
-                                    src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=120"
-                                    className="w-full h-full rounded-full object-cover"
-                                  />
-                                </div>
-                              </div>
-                              <span className="text-[9px] font-bold text-[#8B7E74] mt-1 truncate w-16">ياسر الشمري</span>
-                              <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">75K كوينز</span>
-                              <div className="w-full bg-orange-100 h-8 rounded-t-lg mt-2 flex items-center justify-center font-bold text-amber-800 text-xs shadow-inner">
-                                3
-                              </div>
-                            </div>
-                          </div>
-
+                        {/* Elegant sub-tab selector inside Discover */}
+                        <div className="bg-white p-1 rounded-full border border-[#E8DCC4]/60 flex shadow-sm">
                           <button
-                            onClick={() => alert('ترتيب الهدايا يتم تحديثه تلقائياً بناءً على العمليات السحابية المنقولة!')}
-                            className="text-[9px] text-[#FFAE42] font-black hover:underline"
+                            onClick={() => setExploreSubTab('planet')}
+                            className={`w-1/3 py-1 text-[11px] rounded-full font-black transition-all cursor-pointer ${
+                              exploreSubTab === 'planet' 
+                                ? 'bg-amber-400 text-slate-900 shadow-sm' 
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
                           >
-                            عرض قائمة المتصدرين الكاملة لصدى العرب ←
+                            🌊 كوكب الهدايا
+                          </button>
+                          <button
+                            onClick={() => {
+                              setExploreSubTab('clans');
+                              fetchLiveLeaderboard();
+                            }}
+                            className={`w-1/3 py-1 text-[11px] rounded-full font-black transition-all cursor-pointer ${
+                              exploreSubTab === 'clans' 
+                                ? 'bg-amber-400 text-slate-900 shadow-sm' 
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            🛡️ العائلات والقبائل
+                          </button>
+                          <button
+                            onClick={() => {
+                              setExploreSubTab('leaderboard');
+                              fetchLiveLeaderboard();
+                            }}
+                            className={`w-1/3 py-1 text-[11px] rounded-full font-black transition-all cursor-pointer ${
+                              exploreSubTab === 'leaderboard' 
+                                ? 'bg-amber-400 text-slate-900 shadow-sm' 
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            🏆 لوحة الصدارة
                           </button>
                         </div>
+
+                        {/* SUB-PANEL 1: PLANET / DRIFTING BOTTLE */}
+                        {exploreSubTab === 'planet' && (
+                          <div className="space-y-4 animate-fade-in">
+                            {/* Drifting Bottle and Ahlan Garden widgets */}
+                            <div className="grid grid-cols-2 gap-3">
+                              {/* Ocean Bottle */}
+                              <div 
+                                onClick={() => setDriftingBottleMode('writing')}
+                                className="bg-gradient-to-br from-cyan-400 to-blue-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
+                              >
+                                <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌊</span>
+                                <span className="text-2xl block">🍾</span>
+                                <h4 className="text-xs font-black">زجاجة الرسائل</h4>
+                                <p className="text-[9px] text-cyan-50">ارمِ سرك في البحر أو التقط زجاجة عشوائية!</p>
+                              </div>
+
+                              {/* Ahlan Garden */}
+                              <div 
+                                onClick={() => alert('🌱 بستان صدى العرب: ميزة زراعة الزهور ومبادلة البذور قادمة قريباً!')}
+                                className="bg-gradient-to-br from-emerald-400 to-teal-500 p-3.5 rounded-2xl text-white text-right space-y-1 hover:scale-[1.02] active:scale-[0.98] transition cursor-pointer shadow-sm relative overflow-hidden"
+                              >
+                                <span className="absolute -left-3 -bottom-3 text-5xl opacity-20">🌸</span>
+                                <span className="text-2xl block">🌹</span>
+                                <h4 className="text-xs font-black">بستان صدى العرب</h4>
+                                <p className="text-[9px] text-emerald-50">اهتم بحديقتك واحصد كوينز مع الأصدقاء!</p>
+                              </div>
+                            </div>
+
+                            {/* Gift Gifting Podium Column Rankings */}
+                            <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-center space-y-4">
+                              <div>
+                                <h3 className="text-xs font-black text-[#4A3E3D]">🏆 لوحة شرف وهدايا مجالس صدى</h3>
+                                <p className="text-[9px] text-slate-500 mt-0.5">ترتيب الفرسان الأكثر جوداً وسخاءً هذا الشهر</p>
+                              </div>
+
+                              {/* 3D-Like Podium Columns */}
+                              <div className="flex justify-center items-end gap-3 pt-6 pb-2 min-h-[140px]">
+                                {/* Podium No.2 */}
+                                <div className="flex flex-col items-center w-20">
+                                  <div className="relative">
+                                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥈</span>
+                                    <div className="w-10 h-10 rounded-full border-2 border-slate-300 p-0.5 bg-slate-50">
+                                      <img
+                                        src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120"
+                                        className="w-full h-full rounded-full object-cover"
+                                      />
+                                    </div>
+                                  </div>
+                                  <span className="text-[9px] font-bold text-slate-700 mt-1 truncate w-16">سارة القحطاني</span>
+                                  <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">98K كوينز</span>
+                                  <div className="w-full bg-slate-200 h-10 rounded-t-lg mt-2 flex items-center justify-center font-bold text-slate-500 text-xs shadow-inner">
+                                    2
+                                  </div>
+                                </div>
+
+                                {/* Podium No.1 */}
+                                <div className="flex flex-col items-center w-22">
+                                  <div className="relative -top-3 scale-110">
+                                    <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-xl animate-bounce">👑</span>
+                                    <div className="w-11 h-11 rounded-full border-2 border-[#FFAE42] p-0.5 bg-amber-50">
+                                      <img
+                                        src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120"
+                                        className="w-full h-full rounded-full object-cover"
+                                      />
+                                    </div>
+                                  </div>
+                                  <span className="text-[9px] font-black text-amber-600 mt-1 truncate w-18">أحمد العتيبي</span>
+                                  <span className="text-[8px] text-amber-500 font-extrabold leading-none mt-0.5">125K كوينز</span>
+                                  <div className="w-full bg-[#FFAE42] h-14 rounded-t-lg mt-2 flex items-center justify-center font-black text-white text-sm shadow">
+                                    1
+                                  </div>
+                                </div>
+
+                                {/* Podium No.3 */}
+                                <div className="flex flex-col items-center w-20">
+                                  <div className="relative">
+                                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-md">🥉</span>
+                                    <div className="w-10 h-10 rounded-full border-2 border-amber-700 p-0.5 bg-amber-50/20">
+                                      <img
+                                        src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=120"
+                                        className="w-full h-full rounded-full object-cover"
+                                      />
+                                    </div>
+                                  </div>
+                                  <span className="text-[9px] font-bold text-[#8B7E74] mt-1 truncate w-16">ياسر الشمري</span>
+                                  <span className="text-[8px] text-slate-500 font-bold leading-none mt-0.5">75K كوينز</span>
+                                  <div className="w-full bg-orange-100 h-8 rounded-t-lg mt-2 flex items-center justify-center font-bold text-amber-800 text-xs shadow-inner">
+                                    3
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={() => setExploreSubTab('leaderboard')}
+                                className="text-[9px] text-[#FFAE42] font-black hover:underline"
+                              >
+                                عرض قائمة المتصدرين الكاملة لصدى العرب ←
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* SUB-PANEL 2: CLANS & FAMILIES */}
+                        {exploreSubTab === 'clans' && (
+                          <div className="space-y-4 animate-fade-in text-right">
+                            
+                            {/* Create Clan Form */}
+                            <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm space-y-3">
+                              <h3 className="text-xs font-black text-[#4A3E3D] flex items-center gap-1.5 justify-end">
+                                <span>تأسيس عائلة/قبيلة جديدة</span>
+                                <span>🛡️</span>
+                              </h3>
+                              <p className="text-[9.5px] text-slate-500 leading-normal">
+                                بتأسيسك للعائلة، ستجمع أعضاء مخلصين وتتنافسون مع باقي العائلات لرفع ترتيب القبيلة والحصول على أوسمة حصرية ومكافآت كوينز دورية. <span className="font-extrabold text-amber-600">(تكلفة التأسيس: 1000 كوين)</span>
+                              </p>
+
+                              <div className="grid grid-cols-4 gap-2 items-center">
+                                <div className="col-span-3">
+                                  <input
+                                    type="text"
+                                    placeholder="اكتب اسم القبيلة/العائلة..."
+                                    value={newClanName}
+                                    onChange={(e) => setNewClanName(e.target.value)}
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-right focus:outline-none focus:border-amber-400"
+                                  />
+                                </div>
+                                <div className="col-span-1">
+                                  <select
+                                    value={newClanLogo}
+                                    onChange={(e) => setNewClanLogo(e.target.value)}
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-center focus:outline-none"
+                                  >
+                                    <option value="🛡️">🛡️</option>
+                                    <option value="👑">👑</option>
+                                    <option value="🦁">🦁</option>
+                                    <option value="🦅">🦅</option>
+                                    <option value="⚔️">⚔️</option>
+                                    <option value="💎">💎</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={async () => {
+                                  if (!newClanName.trim()) {
+                                    alert('الرجاء كتابة اسم العائلة أولاً');
+                                    return;
+                                  }
+                                  if (currentUser.coins < 1000) {
+                                    alert('رصيدك من الكوينز غير كافٍ لتأسيس عائلة (تحتاج لـ 1000 كوين)');
+                                    return;
+                                  }
+
+                                  try {
+                                    const res = await fetch('/api/clans/create', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        clan_name: newClanName,
+                                        clan_logo: newClanLogo,
+                                        owner_id: currentUser.id
+                                      })
+                                    });
+
+                                    if (res.ok) {
+                                      const data = await res.json();
+                                      alert(`🎉 مبارك! تم تأسيس عائلة [${newClanName}] بنجاح، وتم منحك وسام العضو الوفي!`);
+                                      setNewClanName('');
+                                      // Deduct client-side coins & update state
+                                      setCurrentUser(prev => prev ? { 
+                                        ...prev, 
+                                        coins: prev.coins - 1000, 
+                                        clanId: data.clan_id,
+                                        badges: [...(prev.badges || []), 'loyal_member']
+                                      } : null);
+                                      fetchLiveLeaderboard();
+                                      fetchDbStates();
+                                    } else {
+                                      const err = await res.json();
+                                      alert(`فشل التأسيس: ${err.error || 'خطأ غير معروف'}`);
+                                    }
+                                  } catch (e: any) {
+                                    alert(`خطأ بالاتصال بالسيرفر: ${e.message}`);
+                                  }
+                                }}
+                                className="w-full bg-gradient-to-r from-amber-500 to-amber-600 text-white font-black text-xs py-2 rounded-xl shadow-md active:scale-95 transition"
+                              >
+                                دفع 1000 كوين وتأسيس العائلة ⚡
+                              </button>
+                            </div>
+
+                            {/* List of Clans */}
+                            <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm space-y-3">
+                              <h3 className="text-xs font-black text-[#4A3E3D] flex justify-between items-center">
+                                <span className="text-[10px] text-slate-400 font-medium">الترتيب حسب نقاط الخبرة (XP)</span>
+                                <span className="flex items-center gap-1.5 font-black">
+                                  <span>القبائل والعائلات النشطة</span>
+                                  <span>🏰</span>
+                                </span>
+                              </h3>
+
+                              {isLeaderboardLoading ? (
+                                <p className="text-xs text-slate-400 text-center py-4">جاري تحميل القبائل النشطة...</p>
+                              ) : !liveLeaderboard?.clans || liveLeaderboard.clans.length === 0 ? (
+                                <p className="text-xs text-slate-400 text-center py-4 italic">لا توجد قبائل مؤسسة حالياً. كن أول من يؤسس قبيلته!</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {liveLeaderboard.clans.map((clan, index) => {
+                                    const isMyClan = currentUser.clanId === clan.clan_id;
+                                    return (
+                                      <div key={clan.clan_id} className={`flex justify-between items-center p-2.5 rounded-xl border ${isMyClan ? 'bg-amber-50/60 border-amber-400' : 'bg-slate-50/50 border-slate-100'} transition`}>
+                                        <div className="flex gap-1.5">
+                                          {isMyClan ? (
+                                            <span className="bg-emerald-500/20 text-emerald-600 text-[8px] font-black px-2 py-1 rounded-md">عائلتك</span>
+                                          ) : (
+                                            <button
+                                              onClick={async () => {
+                                                if (currentUser.clanId) {
+                                                  alert('أنت تنتمي لعائلة بالفعل! يجب مغادرة عائلتك الحالية قبل الانضمام لعائلة جديدة.');
+                                                  return;
+                                                }
+
+                                                try {
+                                                  const res = await fetch('/api/clans/join', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                      clan_id: clan.clan_id,
+                                                      user_id: currentUser.id
+                                                    })
+                                                  });
+
+                                                  if (res.ok) {
+                                                    alert(`🤝 تم انضمامك بنجاح لعائلة [${clan.clan_name}]! وحصلت على لقب العضو الوفي!`);
+                                                    setCurrentUser(prev => prev ? { 
+                                                      ...prev, 
+                                                      clanId: clan.clan_id,
+                                                      badges: [...(prev.badges || []), 'loyal_member']
+                                                    } : null);
+                                                    fetchLiveLeaderboard();
+                                                    fetchDbStates();
+                                                  } else {
+                                                    const err = await res.json();
+                                                    alert(`فشل الانضمام: ${err.error || 'خطأ غير معروف'}`);
+                                                  }
+                                                } catch (e: any) {
+                                                  alert(`خطأ بالسيرفر: ${e.message}`);
+                                                }
+                                              }}
+                                              className="bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black px-3 py-1 rounded-full cursor-pointer transition shadow-sm"
+                                            >
+                                              انضمام 🤝
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                          <div className="text-right">
+                                            <h5 className="text-xs font-black text-[#4A3E3D] flex items-center gap-1 justify-end">
+                                              <span>{clan.clan_name}</span>
+                                              <span className="text-md">{clan.clan_logo}</span>
+                                            </h5>
+                                            <p className="text-[8px] text-slate-400 mt-0.5">القائد: {clan.owner_id === currentUser.id ? 'أنت' : clan.owner_id} | نقاط الخبرة: ⭐ {clan.total_xp}</p>
+                                          </div>
+                                          <span className="text-xs font-black text-slate-400 w-4 text-center">#{index + 1}</span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* SUB-PANEL 3: LIVE LEADERBOARD */}
+                        {exploreSubTab === 'leaderboard' && (
+                          <div className="space-y-4 animate-fade-in text-right">
+                            
+                            {/* Senders and Receivers lists */}
+                            <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm space-y-4">
+                              <div className="border-b border-slate-100 pb-2">
+                                <h3 className="text-xs font-black text-[#4A3E3D] flex items-center gap-1.5 justify-end">
+                                  <span>👑 فرسان السخاء والعطاء</span>
+                                  <span>✨</span>
+                                </h3>
+                                <p className="text-[9px] text-slate-400 mt-0.5">ترتيب المستخدمين الداعمين الأكثر إرسالاً للهدايا</p>
+                              </div>
+
+                              {isLeaderboardLoading ? (
+                                <p className="text-xs text-slate-400 text-center">جاري جلب لوحة الصدارة الحية...</p>
+                              ) : !liveLeaderboard?.senders || liveLeaderboard.senders.length === 0 ? (
+                                <p className="text-xs text-slate-400 text-center italic">لا يوجد داعمون نشطون في هذه الدورة</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {liveLeaderboard.senders.map((user, idx) => (
+                                    <div key={user.id} className="flex justify-between items-center p-2 rounded-xl bg-slate-50/50 hover:bg-slate-50 border border-slate-100/60">
+                                      <span className="text-[10px] text-amber-600 font-extrabold font-mono">⭐ {user.sender_xp || 0} XP</span>
+                                      
+                                      <div className="flex items-center gap-2">
+                                        <div className="text-right">
+                                          <h4 className="text-xs font-black text-slate-800 flex items-center gap-1">
+                                            <span className="bg-purple-600 text-white text-[7px] font-black px-1 rounded">VIP {user.vip_level || 1}</span>
+                                            <span>{user.name}</span>
+                                          </h4>
+                                          <p className="text-[8px] text-slate-400">مستوى الحساب: {user.level} | معرف: {user.id}</p>
+                                        </div>
+                                        <span className="text-xs font-black text-slate-400 w-4 text-center">#{idx + 1}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Charm Receivers list */}
+                            <div className="bg-white p-4 rounded-2xl border border-[#E8DCC4]/60 shadow-sm space-y-4">
+                              <div className="border-b border-slate-100 pb-2">
+                                <h3 className="text-xs font-black text-[#4A3E3D] flex items-center gap-1.5 justify-end">
+                                  <span>💖 نجوم الجاذبية والكاريزما</span>
+                                  <span>✨</span>
+                                </h3>
+                                <p className="text-[9px] text-slate-400 mt-0.5">ترتيب المستخدمين الأكثر استقبالاً للهدايا والجاذبية</p>
+                              </div>
+
+                              {isLeaderboardLoading ? (
+                                <p className="text-xs text-slate-400 text-center">جاري جلب لوحة الصدارة الحية...</p>
+                              ) : !liveLeaderboard?.receivers || liveLeaderboard.receivers.length === 0 ? (
+                                <p className="text-xs text-slate-400 text-center italic">لا توجد نجوم جاذبية نشطة حالياً</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {liveLeaderboard.receivers.map((user, idx) => (
+                                    <div key={user.id} className="flex justify-between items-center p-2 rounded-xl bg-slate-50/50 hover:bg-slate-50 border border-slate-100/60">
+                                      <span className="text-[10px] text-rose-500 font-extrabold font-mono">💖 {user.charm_xp || 0} XP</span>
+                                      
+                                      <div className="flex items-center gap-2">
+                                        <div className="text-right">
+                                          <h4 className="text-xs font-black text-slate-800 flex items-center gap-1">
+                                            <span className="bg-pink-500 text-white text-[7px] font-black px-1 rounded">CHARM</span>
+                                            <span>{user.name}</span>
+                                          </h4>
+                                          <p className="text-[8px] text-slate-400">مستوى الحساب: {user.level} | معرف: {user.id}</p>
+                                        </div>
+                                        <span className="text-xs font-black text-slate-400 w-4 text-center">#{idx + 1}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                          </div>
+                        )}
+
                       </div>
                     )}
 
@@ -2304,19 +3037,44 @@ export default function App() {
                             </div>
 
                             <div className="text-right">
-                              <h3 className="text-sm font-black flex items-center gap-1.5">
+                              <h3 className="text-sm font-black flex items-center gap-1.5 font-sans">
                                 <span>{currentUser.name}</span>
-                                <span className="bg-amber-400 text-slate-950 text-[7px] font-black px-1.5 py-0.5 rounded-full">SVIP</span>
+                                <span className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white text-[7px] font-black px-1.5 py-0.5 rounded-full shadow-sm border border-purple-400/20">
+                                  VIP {currentUser.vipLevel || 1}
+                                </span>
                               </h3>
                               <p className="text-[10px] text-amber-100 font-mono mt-0.5">معرف الحساب: {currentUser.id}</p>
-                              <div className="flex gap-1.5 mt-1.5">
+                              
+                              <div className="flex gap-1.5 mt-1.5 flex-wrap">
                                 <span className="bg-amber-400/20 text-amber-300 text-[8px] px-2 py-0.5 rounded border border-amber-400/20 font-bold">
                                   مستوى الحساب: {currentUser.level}
                                 </span>
-                                <span className="bg-blue-400/20 text-blue-300 text-[8px] px-2 py-0.5 rounded font-bold">
-                                  ذكر ♂
-                                </span>
+                                {currentUser.clanId && (
+                                  <span className="bg-blue-400/20 text-blue-300 text-[8px] px-2 py-0.5 rounded border border-blue-400/20 font-bold">
+                                    🛡️ عائلة: {currentUser.clanId}
+                                  </span>
+                                )}
                               </div>
+
+                              {currentUser.badges && currentUser.badges.length > 0 && (
+                                <div className="flex gap-1 mt-1.5 flex-wrap">
+                                  {currentUser.badges.map((badgeId) => {
+                                    let icon = "🏅";
+                                    let name = badgeId;
+                                    if (badgeId === 'king') { icon = "👑"; name = "الملك"; }
+                                    else if (badgeId === 'diamond_charger') { icon = "💎"; name = "الداعم الماسي"; }
+                                    else if (badgeId === 'loyal_member') { icon = "🛡️"; name = "العضو الوفي"; }
+                                    else if (badgeId === 'charm_prince') { icon = "✨"; name = "أمير الجاذبية"; }
+                                    
+                                    return (
+                                      <span key={badgeId} className="bg-amber-400/25 border border-amber-400/40 px-1.5 py-0.5 rounded-full text-[7.5px] text-amber-200 font-extrabold flex items-center gap-0.5">
+                                        <span>{icon}</span>
+                                        <span>{name}</span>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           </div>
 
@@ -2389,23 +3147,23 @@ export default function App() {
                         <div className="bg-white p-3.5 rounded-2xl border border-[#E8DCC4]/60 shadow-sm text-right space-y-3">
                           <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                             <span className="text-xs font-black text-[#4A3E3D]">محفظة الكوينز والشحن 💰</span>
-                            <span className="text-[10px] text-amber-500 font-bold">الرصيد الكلي: 🪙 {currentUser.coins.toFixed(0)}</span>
+                            <span className="text-[10px] text-amber-500 font-bold">الرصيد الكلي: 🪙 {currentUser?.coins?.toFixed(0) || "0"}</span>
                           </div>
 
                           <div className="flex justify-between items-center bg-amber-50/50 p-2.5 rounded-xl border border-amber-400/20 relative">
                             {/* Speech bubble */}
                             <div className="absolute -top-3.5 left-2 bg-yellow-400 text-slate-950 text-[8px] font-black px-1.5 py-0.5 rounded-md shadow-sm">
-                              انقر لشحن فوري ⚡
+                              شحن آمن يدوي ⚡
                             </div>
                             <div className="text-right">
-                              <span className="text-[9px] text-slate-500">الوكيل المعتمد لصدى العرب</span>
-                              <h5 className="text-xs font-black text-amber-600 leading-tight">شحن فوري كاش أوفلاين</h5>
+                              <span className="text-[9px] text-slate-500">نظام الوكلاء المعتمدين للشحن</span>
+                              <h5 className="text-xs font-black text-amber-600 leading-tight">شحن فوري عبر الواتساب</h5>
                             </div>
                             <button 
-                              onClick={() => setCurrentScreen('agent_pin')}
-                              className="bg-amber-500 text-white font-bold text-[9px] px-3 py-1 rounded-full shadow-sm hover:bg-amber-600 transition"
+                              onClick={() => setIsAgentsHubOpen(true)}
+                              className="bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-sm hover:bg-amber-600 transition cursor-pointer"
                             >
-                              اشحن الآن
+                              شحن الكوينز
                             </button>
                           </div>
                         </div>
@@ -2560,6 +3318,154 @@ export default function App() {
                             className="bg-[#FFAE42] text-white py-2 rounded-xl text-xs font-black transition shadow-sm"
                           >
                             تأكيد الدخول
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Create Custom Room Modal */}
+                  {isCreateRoomModalOpen && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center p-6 z-50 animate-fade-in" dir="rtl">
+                      <div className="bg-white border border-[#E8DCC4] p-5 rounded-3xl w-full max-w-xs text-right space-y-4 shadow-2xl animate-scale-up">
+                        <div className="text-center border-b border-slate-100 pb-3">
+                          <span className="text-3xl block mb-1 animate-pulse">🎙️</span>
+                          <h4 className="text-sm font-black text-[#4A3E3D]">إنشاء مجلس صوتي جديد</h4>
+                          <p className="text-[10px] text-slate-500 mt-1">ابدأ مجلسك الآن واستضف أصدقائك للدردشة الصوتية</p>
+                        </div>
+
+                        {newRoomError && (
+                          <div className="bg-rose-50 text-rose-700 text-[10px] p-2 rounded-lg border border-rose-200 text-center font-bold">
+                            ⚠️ {newRoomError}
+                          </div>
+                        )}
+
+                        <div className="space-y-3.5">
+                          {/* Room Name Input */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 font-bold block">اسم المجلس</label>
+                            <input
+                              type="text"
+                              placeholder="مثال: مجلس ديوانية العرب ☕"
+                              value={newRoomNameInput}
+                              onChange={(e) => {
+                                setNewRoomNameInput(e.target.value);
+                                setNewRoomError('');
+                              }}
+                              className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-right text-xs text-[#4A3E3D] focus:outline-none focus:border-[#FFAE42]"
+                            />
+                          </div>
+
+                          {/* Room Privacy Choice */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 font-bold block">نوع المجلس</label>
+                            <div className="grid grid-cols-2 gap-2 p-1 bg-[#FAF6EB] rounded-xl border border-[#DCD7C9]/40">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewRoomIsPrivate(false);
+                                  setNewRoomPassword('');
+                                }}
+                                className={`py-1.5 text-[10px] font-black rounded-lg transition-all flex items-center justify-center gap-1 ${
+                                  !newRoomIsPrivate
+                                    ? 'bg-white text-[#FFAE42] shadow-sm border border-[#FFAE42]/10'
+                                    : 'text-slate-500 hover:text-slate-800'
+                                }`}
+                              >
+                                <span>🌍 عام</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setNewRoomIsPrivate(true)}
+                                className={`py-1.5 text-[10px] font-black rounded-lg transition-all flex items-center justify-center gap-1 ${
+                                  newRoomIsPrivate
+                                    ? 'bg-white text-[#FFAE42] shadow-sm border border-[#FFAE42]/10'
+                                    : 'text-slate-500 hover:text-slate-800'
+                                }`}
+                              >
+                                <span>🔒 خاص</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Password Field if private */}
+                          {newRoomIsPrivate && (
+                            <div className="space-y-1 animate-fade-in">
+                              <label className="text-[10px] text-slate-500 font-bold block">الرمز السري للدخول</label>
+                              <input
+                                type="text"
+                                placeholder="مثال: 123"
+                                value={newRoomPassword}
+                                onChange={(e) => {
+                                  setNewRoomPassword(e.target.value);
+                                  setNewRoomError('');
+                                }}
+                                className="w-full bg-[#FAF6EB] border border-[#DCD7C9] rounded-xl p-2.5 text-center text-xs text-[#4A3E3D] font-mono focus:outline-none focus:border-[#FFAE42]"
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
+                          <button
+                            type="button"
+                            onClick={() => setIsCreateRoomModalOpen(false)}
+                            className="bg-slate-100 hover:bg-slate-200 py-2.5 rounded-xl text-xs font-bold text-[#8B7E74] transition"
+                            disabled={newRoomLoading}
+                          >
+                            إلغاء
+                          </button>
+                          <button
+                            type="button"
+                            disabled={newRoomLoading}
+                            onClick={async () => {
+                              if (!newRoomNameInput.trim()) {
+                                setNewRoomError('يرجى كتابة اسم المجلس الصوتي أولاً');
+                                return;
+                              }
+                              if (newRoomIsPrivate && !newRoomPassword.trim()) {
+                                setNewRoomError('يرجى كتابة رمز الدخول السري للمجلس الخاص');
+                                return;
+                              }
+
+                              setNewRoomLoading(true);
+                              setNewRoomError('');
+                              try {
+                                const response = await fetch('/api/rooms/create', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    room_name: newRoomNameInput.trim(),
+                                    owner_id: currentUser?.id,
+                                    is_private: newRoomIsPrivate,
+                                    password: newRoomPassword.trim()
+                                  })
+                                });
+
+                                if (response.ok) {
+                                  setIsCreateRoomModalOpen(false);
+                                  alert(`🎉 تم إنشاء مجلسك الصوتي "${newRoomNameInput.trim()}" بنجاح!`);
+                                  await fetchDbStates();
+                                } else {
+                                  setNewRoomError('فشل إنشاء المجلس، يرجى المحاولة مرة أخرى.');
+                                }
+                              } catch (e) {
+                                console.error(e);
+                                setNewRoomError('حدث خطأ في الاتصال بالخادم.');
+                              } finally {
+                                setNewRoomLoading(false);
+                              }
+                            }}
+                            className="bg-[#FFAE42] text-white py-2.5 rounded-xl text-xs font-black transition shadow-sm hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-50"
+                          >
+                            {newRoomLoading ? (
+                              <>
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                <span>جاري الإنشاء...</span>
+                              </>
+                            ) : (
+                              <span>إنشاء المجلس ✨</span>
+                            )}
                           </button>
                         </div>
                       </div>
@@ -2842,13 +3748,21 @@ export default function App() {
 
                   {/* Ambient Stage Spotlights, Lasers and Bokeh Light Spheres */}
                   <div className="absolute inset-0 pointer-events-none z-0">
-                    <div className="absolute inset-0 bg-gradient-to-b from-[#140b2e] via-[#090518] to-[#010005]"></div>
+                    <div className="absolute inset-0 bg-gradient-to-b from-[#180936] via-[#0b041a] to-[#020008]"></div>
                     
                     {/* Glowing color spots with soft blur */}
-                    <div className="absolute top-[8%] left-[15%] w-[160px] h-[320px] bg-purple-600/10 rounded-full blur-[65px] transform -rotate-12 animate-pulse" style={{ animationDuration: '7s' }}></div>
-                    <div className="absolute top-[12%] right-[8%] w-[170px] h-[340px] bg-indigo-500/10 rounded-full blur-[70px] transform rotate-12 animate-pulse" style={{ animationDuration: '9s' }}></div>
-                    <div className="absolute bottom-[25%] left-[10%] w-[190px] h-[220px] bg-pink-600/10 rounded-full blur-[75px] animate-pulse" style={{ animationDuration: '8s' }}></div>
-                    <div className="absolute top-[35%] left-[35%] w-[140px] h-[140px] bg-cyan-500/10 rounded-full blur-[60px]"></div>
+                    <div className="absolute top-[8%] left-[15%] w-[200px] h-[350px] bg-purple-600/15 rounded-full blur-[80px] transform -rotate-12 animate-pulse" style={{ animationDuration: '7s' }}></div>
+                    <div className="absolute top-[12%] right-[8%] w-[210px] h-[360px] bg-indigo-500/15 rounded-full blur-[85px] transform rotate-12 animate-pulse" style={{ animationDuration: '9s' }}></div>
+                    <div className="absolute bottom-[25%] left-[10%] w-[220px] h-[250px] bg-pink-600/15 rounded-full blur-[90px] animate-pulse" style={{ animationDuration: '8s' }}></div>
+                    <div className="absolute top-[35%] left-[35%] w-[160px] h-[160px] bg-cyan-500/12 rounded-full blur-[70px]"></div>
+
+                    {/* Slow floating luxurious background particles / Bokeh light dots */}
+                    <div className="absolute top-[15%] left-[8%] w-3 h-3 bg-purple-400/40 rounded-full blur-[1px] animate-float-particle-1"></div>
+                    <div className="absolute top-[45%] right-[12%] w-4 h-4 bg-indigo-400/35 rounded-full blur-[2px] animate-float-particle-2"></div>
+                    <div className="absolute bottom-[35%] left-[22%] w-2.5 h-2.5 bg-pink-400/45 rounded-full blur-[1px] animate-float-particle-1" style={{ animationDelay: '2.5s' }}></div>
+                    <div className="absolute top-[20%] right-[28%] w-4.5 h-4.5 bg-cyan-400/30 rounded-full blur-[3px] animate-float-particle-2" style={{ animationDelay: '4.5s' }}></div>
+                    <div className="absolute bottom-[18%] right-[18%] w-3.5 h-3.5 bg-yellow-400/35 rounded-full blur-[1.5px] animate-float-particle-1" style={{ animationDelay: '1.2s' }}></div>
+                    <div className="absolute top-[38%] left-[42%] w-3 h-3 bg-purple-500/40 rounded-full blur-[1px] animate-float-particle-2" style={{ animationDelay: '3.2s' }}></div>
 
                     {/* Subtle vertical spotlight beams */}
                     <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[2px] h-[600px] bg-gradient-to-b from-purple-500/15 via-transparent to-transparent opacity-30 blur-[1px]"></div>
@@ -2923,6 +3837,7 @@ export default function App() {
                           setIsQueueDrawerOpen(false);
                           setSelectedGift(null);
                           setCurrentScreen('explore');
+                          stopAgora(); // Stop Agora RTC session
                         }}
                         className="w-7 h-7 rounded-full bg-black/40 hover:bg-black/60 text-slate-300 hover:text-white flex items-center justify-center transition active:scale-90"
                         id="exit-room-btn"
@@ -2943,62 +3858,90 @@ export default function App() {
                         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => {
                           const seat = activeRoom.seats[index] || { index, userId: null, isMuted: false, isLocked: false };
                           const occupant = seat.userId ? users.find(u => u.id === seat.userId) : null;
-                          const isSpeaking = speakingSeatIndex === index && occupant;
+                          const isCurrentUser = occupant && currentUser && occupant.id === currentUser.id;
+                          const isSpeaking = !isRoomAudioDeafened && occupant && !seat.isMuted && (
+                            isCurrentUser 
+                              ? (realUserMicSpeaking || speakingSeatIndex === index)
+                              : (speakingSeatIndex === index)
+                          );
 
                           // Helper to render premium wings and halos
                           const renderSeatFrame = (childrenNode: React.ReactNode) => {
-                            if (index === 0) { // Mason / Host (Double circle + Gold Crown)
-                              return (
-                                <div className={`relative p-1 rounded-full bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 shadow-md ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-amber-400/50' : ''}`}>
-                                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-xs drop-shadow">👑</div>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
-                            if (index === 1) { // Sophia (Purple neon glow)
-                              return (
-                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-purple-600 via-fuchsia-500 to-pink-500 shadow-sm ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-purple-500/50' : ''}`}>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
-                            if (index === 2) { // Charlotte (Cyan neon ring)
-                              return (
-                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-cyan-400 via-blue-500 to-indigo-500 shadow-sm ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
-                            if (index === 3) { // Ava (Glowing Blue Wings Frame)
-                              return (
-                                <div className={`relative p-0.5 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
-                                  <div className="absolute -left-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
-                                  <div className="absolute -right-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
-                            if (index === 4) { // Ryan (Silver Ring)
-                              return (
-                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-slate-400 to-slate-200 ${isSpeaking ? 'animate-voice-pulse scale-105' : ''}`}>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
-                            if (index === 5) { // Aby (Angel wings frame)
-                              return (
-                                <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-amber-400 via-yellow-300 to-orange-400 ${isSpeaking ? 'animate-voice-pulse scale-105 shadow-amber-300/30' : ''}`}>
-                                  <div className="absolute -left-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
-                                  <div className="absolute -right-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
-                                  {childrenNode}
-                                </div>
-                              );
-                            }
+                            // Scale the radar wave rings dynamically to reflect live simulated or real voice vibration volume
+                            const currentVolume = (isCurrentUser && realUserMicSpeaking && realUserMicVolume > 0)
+                              ? Math.min(100, Math.max(30, Math.floor(realUserMicVolume * 3)))
+                              : speakingVolume;
 
-                            // Default style for unoccupied/unlocked seats
+                            const scaleFactor1 = 1 + (currentVolume * 0.005);
+                            const scaleFactor2 = 1 + (currentVolume * 0.012);
+                            const scaleFactor3 = 1 + (currentVolume * 0.018);
+
+                            let waveColorClass = "border-emerald-500 bg-emerald-500/10";
+                            if (index === 0) waveColorClass = "border-amber-400 bg-amber-400/15";
+                            else if (index === 1) waveColorClass = "border-fuchsia-500 bg-fuchsia-500/15";
+                            else if (index === 2) waveColorClass = "border-cyan-400 bg-cyan-400/15";
+
                             return (
-                              <div className={`relative p-0.5 rounded-full border ${isSpeaking ? 'border-purple-400 animate-voice-pulse scale-105' : 'border-slate-800/40 hover:border-purple-500/30'}`}>
-                                {childrenNode}
+                              <div className="relative">
+                                {/* Multi-layered Voice Radar Pulse Rings */}
+                                {isSpeaking && (
+                                  <div className="absolute inset-0 pointer-events-none select-none z-0">
+                                    <div 
+                                      className={`absolute inset-0 rounded-full border ${waveColorClass} animate-radar-1`}
+                                      style={{ transform: `scale(${scaleFactor1})` }}
+                                    />
+                                    <div 
+                                      className={`absolute inset-0 rounded-full border ${waveColorClass} animate-radar-2`}
+                                      style={{ transform: `scale(${scaleFactor2})` }}
+                                    />
+                                    <div 
+                                      className={`absolute inset-0 rounded-full border ${waveColorClass} animate-radar-3`}
+                                      style={{ transform: `scale(${scaleFactor3})` }}
+                                    />
+                                  </div>
+                                )}
+
+                                {/* Card frame ring */}
+                                <div className="relative z-10">
+                                  {index === 0 ? (
+                                    // Mason / Host / Ahmad Al-Otaibi (Luxury animated gold border + Gold Crown)
+                                    <div className={`relative p-0.5 rounded-full select-none vip-golden-shine shadow-lg transition-transform duration-150 ${isSpeaking ? 'scale-105 shadow-amber-500/40' : 'shadow-black/40'}`}>
+                                      <div className="relative p-0.5 rounded-full bg-[#1b1202] border border-yellow-500/30">
+                                        <div className="absolute -top-4.5 left-1/2 -translate-x-1/2 text-[15px] drop-shadow-md z-30 animate-[bounce_1.8s_infinite] select-none pointer-events-none">👑</div>
+                                        {childrenNode}
+                                      </div>
+                                    </div>
+                                  ) : index === 1 ? ( // Sophia (Purple neon glow)
+                                    <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-purple-600 via-fuchsia-500 to-pink-500 shadow-sm transition-transform duration-150 ${isSpeaking ? 'scale-105 shadow-purple-500/50' : ''}`}>
+                                      {childrenNode}
+                                    </div>
+                                  ) : index === 2 ? ( // Charlotte (Cyan neon ring)
+                                    <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-cyan-400 via-blue-500 to-indigo-500 shadow-sm transition-transform duration-150 ${isSpeaking ? 'scale-105 shadow-cyan-400/50' : ''}`}>
+                                      {childrenNode}
+                                    </div>
+                                  ) : index === 3 ? ( // Ava (Glowing Blue Wings Frame)
+                                    <div className={`relative p-0.5 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-transform duration-150 ${isSpeaking ? 'scale-105' : ''}`}>
+                                      <div className="absolute -left-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
+                                      <div className="absolute -right-2.5 top-1.5 text-[10px] pointer-events-none select-none drop-shadow">🪶</div>
+                                      {childrenNode}
+                                    </div>
+                                  ) : index === 4 ? ( // Ryan (Silver Ring)
+                                    <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-slate-400 to-slate-200 transition-transform duration-150 ${isSpeaking ? 'scale-105' : ''}`}>
+                                      {childrenNode}
+                                    </div>
+                                  ) : index === 5 ? ( // Aby (Angel wings frame)
+                                    <div className={`relative p-0.5 rounded-full bg-gradient-to-tr from-amber-400 via-yellow-300 to-orange-400 transition-transform duration-150 ${isSpeaking ? 'scale-105 shadow-amber-300/30' : ''}`}>
+                                      <div className="absolute -left-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
+                                      <div className="absolute -right-3 top-0.5 text-xs pointer-events-none select-none drop-shadow">👼</div>
+                                      {childrenNode}
+                                    </div>
+                                  ) : (
+                                    // Default style for other seats
+                                    <div className={`relative p-0.5 rounded-full border transition-all duration-150 ${isSpeaking ? 'border-emerald-400 bg-emerald-500/10 scale-105' : 'border-slate-800/40 hover:border-purple-500/30 bg-slate-950/40'}`}>
+                                      {childrenNode}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             );
                           };
@@ -3019,17 +3962,35 @@ export default function App() {
                                       className="w-full h-full object-cover"
                                     />
                                   ) : seat.isLocked ? (
-                                    <Lock className="w-3.5 h-3.5 text-red-500" />
+                                    // Luxurious 3D gold colored padlock icon with inner glow
+                                    <div className="flex flex-col items-center justify-center bg-gradient-to-br from-amber-500/20 to-red-500/20 border border-amber-500/40 w-full h-full rounded-full shadow-inner shadow-amber-500/30">
+                                      <Lock className="w-3.5 h-3.5 text-amber-400 drop-shadow-[0_0_8px_rgba(245,158,11,0.7)] animate-pulse" />
+                                    </div>
                                   ) : (
-                                    // Elegant Armchair/Sofa SVG Inside Empty Seat
-                                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-slate-600 opacity-60">
-                                      <path d="M19 10h-1c0-1.65-1.35-3-3-3H9c-1.65 0-3 1.35-3 3H5c-1.65 0-3 1.35-3 3v4c0 1.1.9 2 2 2h1v1c0 .55.45 1 1 1s1-.45 1-1v-1h8v1c0 .55.45 1 1 1s1-.45 1-1v-1h1c1.1 0 2-.9 2-2v-4c0-1.65-1.35-3-3-3zM6 14h12v3H6v-3z" />
-                                    </svg>
+                                    // Elegant minimalist linear microphone outline SVG inside empty seat
+                                    <div className="flex items-center justify-center w-full h-full rounded-full bg-gradient-to-b from-[#140b2a] to-[#05020c] border border-purple-500/5 hover:border-purple-500/30 transition-colors group">
+                                      <svg 
+                                        viewBox="0 0 24 24" 
+                                        fill="none" 
+                                        stroke="currentColor" 
+                                        strokeWidth="2.5" 
+                                        strokeLinecap="round" 
+                                        strokeLinejoin="round" 
+                                        className="w-4 h-4 text-purple-400/35 group-hover:text-purple-400/80 transition-colors drop-shadow"
+                                      >
+                                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                                        <line x1="12" x2="12" y1="19" y2="22" />
+                                      </svg>
+                                      <span className="absolute bottom-1 text-[5px] text-purple-400/25 font-bold group-hover:text-purple-400/60 transition-colors select-none">
+                                        {index + 1}
+                                      </span>
+                                    </div>
                                   )}
 
-                                  {/* Speaking indicator overlay */}
+                                  {/* Fast flashing neon speaking border */}
                                   {isSpeaking && (
-                                    <div className="absolute inset-0 bg-emerald-500/10 border-2 border-emerald-400 rounded-full animate-pulse pointer-events-none" />
+                                    <div className="absolute inset-0 bg-emerald-500/5 border border-emerald-400 rounded-full animate-pulse pointer-events-none" />
                                   )}
                                 </div>
                               )}
@@ -3038,13 +3999,20 @@ export default function App() {
                               <div className="mt-1 flex flex-col items-center">
                                 {occupant ? (
                                   <>
-                                    <span className="text-[8px] text-white font-bold max-w-[50px] truncate block leading-tight">
-                                      {occupant.name.replace(' 👑', '')}
+                                    <span className="text-[8.5px] text-white font-bold max-w-[50px] truncate block leading-tight">
+                                      {occupant.id === '1001' ? 'أحمد العتيبي' : occupant.name.replace(' 👑', '')}
                                     </span>
-                                    {/* Muted overlay icon */}
-                                    {seat.isMuted && (
-                                      <VolumeX className="w-2 h-2 text-red-400 mt-0.5" />
-                                    )}
+                                    {/* Small custom-styled level badge under the name */}
+                                    <div className={`mt-0.5 px-1 py-0.2 rounded-md bg-gradient-to-r ${
+                                      occupant.level >= 90 ? 'from-purple-600 via-pink-500 to-rose-500 text-pink-100 border border-purple-400/30' :
+                                      occupant.level >= 50 ? 'from-yellow-500 to-amber-500 text-amber-950 font-black' :
+                                      occupant.level >= 20 ? 'from-cyan-500 to-blue-500 text-white' :
+                                      'from-slate-700 to-slate-800 text-slate-300'
+                                    } shadow-[0_1px_2px_rgba(0,0,0,0.4)] scale-[0.85] flex items-center justify-center leading-none`}>
+                                      <span className="text-[6px] font-black tracking-tight block">
+                                        Lv.{occupant.level}
+                                      </span>
+                                    </div>
                                   </>
                                 ) : (
                                   <span className="text-[8px] text-slate-500 font-mono">
@@ -3059,20 +4027,20 @@ export default function App() {
                     </div>
 
                     {/* Live Arabic Council Chat Feed - Premium Floating Transparent Overlay (Exactly like the screenshot) */}
-                    <div className="absolute bottom-1 right-3 left-3 h-[130px] pointer-events-none z-20 flex flex-col justify-end overflow-hidden" dir="rtl">
+                    <div className="absolute bottom-2 right-3 left-3 h-[135px] pointer-events-auto z-20 bg-black/50 backdrop-blur-md border border-white/5 rounded-2xl p-2.5 shadow-2xl flex flex-col justify-end overflow-hidden" dir="rtl">
                       <div 
                         ref={(el) => {
                           if (el) {
                             el.scrollTop = el.scrollHeight;
                           }
                         }}
-                        className="overflow-y-auto space-y-1 scrollbar-none pr-1 flex flex-col justify-end"
+                        className="overflow-y-auto space-y-1.5 scrollbar-none pr-1 flex flex-col justify-end"
                         style={{ 
                           direction: 'rtl', 
                           textAlign: 'right',
-                          WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,1) 50%, rgba(0,0,0,0) 100%)',
-                          maskImage: 'linear-gradient(to top, rgba(0,0,0,1) 50%, rgba(0,0,0,0) 100%)',
-                          height: '130px'
+                          WebkitMaskImage: 'linear-gradient(to top, rgba(0,0,0,1) 75%, rgba(0,0,0,0) 100%)',
+                          maskImage: 'linear-gradient(to top, rgba(0,0,0,1) 75%, rgba(0,0,0,0) 100%)',
+                          height: '115px'
                         }}
                       >
                         {/* Screenshots accurate chat elements */}
@@ -3081,46 +4049,51 @@ export default function App() {
                           let lvl = 16;
                           let lvlBg = 'bg-cyan-500/20 text-cyan-300 border-cyan-400/30';
                           let isAnchor = false;
+                          let senderColorClass = 'text-sky-300';
 
                           if (msg.sender === 'Sophia') {
                             lvl = 99;
                             lvlBg = 'bg-pink-500/20 text-pink-300 border-pink-400/30';
+                            senderColorClass = 'text-pink-400';
                           } else if (msg.sender === 'Mason 👑' || msg.sender === 'Mason') {
                             lvl = 65;
                             lvlBg = 'bg-purple-500/20 text-purple-300 border-purple-400/30';
                             isAnchor = true;
+                            senderColorClass = 'text-yellow-400 font-extrabold drop-shadow-[0_0_6px_rgba(234,179,8,0.3)]';
                           } else if (msg.sender === 'Ryan') {
                             lvl = 32;
                             lvlBg = 'bg-blue-500/20 text-blue-300 border-blue-400/30';
+                            senderColorClass = 'text-blue-300';
                           } else if (msg.sender === 'Charlotte') {
                             lvl = 18;
                             lvlBg = 'bg-indigo-500/20 text-indigo-300 border-indigo-400/30';
+                            senderColorClass = 'text-fuchsia-400';
                           }
 
                           const isSystem = msg.type === 'system';
 
                           return (
                             <div key={idx} className="leading-relaxed animate-chat-slide-up flex">
-                              <div className="bg-black/30 backdrop-blur-xs px-2 py-0.5 rounded-full inline-flex items-center gap-1.5 max-w-[95%] text-right">
+                              <div className="px-1.5 py-0.5 inline-flex items-center gap-1.5 max-w-[98%] text-right flex-wrap">
                                 {!isSystem && (
                                   <>
                                     {/* Level Badge */}
-                                    <span className={`text-[7px] font-bold px-1 rounded-full border ${lvlBg}`}>
+                                    <span className={`text-[6.5px] font-black px-1 rounded-md border ${lvlBg} leading-none py-[1px]`}>
                                       Lv.{lvl}
                                     </span>
                                     {/* Anchor Badge */}
                                     {isAnchor && (
-                                      <span className="text-[7px] font-extrabold bg-blue-600/30 text-blue-300 px-1 rounded-full border border-blue-400/30">
-                                        ANCHOR
+                                      <span className="text-[6.5px] font-extrabold bg-blue-600/30 text-blue-200 px-1 rounded-md border border-blue-400/30 leading-none py-[1px]">
+                                        HOST
                                       </span>
                                     )}
                                   </>
                                 )}
                                 
-                                <span className={`${isSystem ? 'text-purple-300' : 'text-amber-400/90'} font-bold text-[9px]`}>
+                                <span className={`${isSystem ? 'text-purple-300 font-bold' : senderColorClass} text-[9.5px] font-bold`}>
                                   {msg.sender}:
                                 </span>{' '}
-                                <span className="text-white text-[9px] font-medium leading-tight inline-flex items-center gap-1 flex-wrap">
+                                <span className="text-white text-[9.5px] font-semibold leading-relaxed inline-flex items-center gap-1 flex-wrap font-sans">
                                   {msg.isEncrypted ? (
                                     <>
                                       <span className="text-emerald-400 font-extrabold text-[10px]" title="مشفّر طرف-إلى-طرف (E2EE)">🔒</span>
@@ -3148,132 +4121,142 @@ export default function App() {
                   {/* NATIVE PHONE NAVIGATION AND BOTTOM ACTION HUB (Overhauled perfectly matching screenshot) */}
                   <div className="p-3 bg-slate-950/95 border-t border-purple-950/30 flex justify-between items-center select-none z-30 gap-2" dir="rtl">
                     
-                    {/* Left: Input box "Let's talk" (أرسل رسالة للمجلس...) */}
-                    <div className="flex-grow flex items-center bg-black/40 border border-white/5 rounded-full px-3 py-1.5 transition-all">
-                      <input
-                        type="text"
-                        value={chatInputValue}
-                        onChange={(e) => setChatInputValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            handleSendChatMessage();
-                          }
-                        }}
-                        placeholder="أرسل رسالة للمجلس..."
-                        className="flex-grow bg-transparent text-[10px] text-slate-100 placeholder-slate-500 text-right outline-none w-full"
-                        dir="rtl"
-                        id="chat-interactive-input"
-                      />
-                      {/* Smiley icon trigger */}
-                      <button
-                        onClick={() => alert('مجموعة الملصقات والرموز التعبيرية ستتوفر قريباً مع حزمة IM SDK!')}
-                        className="text-slate-400 hover:text-white mx-1 text-xs"
-                      >
-                        😊
-                      </button>
-                      <button
-                        onClick={handleSendChatMessage}
-                        className={`p-1 rounded-full text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 ${
-                          chatInputValue.trim() 
-                            ? 'bg-purple-600' 
-                            : 'text-slate-500'
-                        }`}
-                        title="إرسال"
-                        id="chat-send-btn"
-                      >
-                        <Send className="w-3 h-3 transform" />
-                      </button>
-                    </div>
+                    {/* RIGHT-SIDE CLUSTER: Chat Input, Mic toggle, Speaker toggle, and Prominent Gift Button */}
+                    <div className="flex-grow flex items-center gap-1.5 min-w-0">
+                      {/* Input box "Let's talk" (أرسل رسالة للمجلس...) */}
+                      <div className="flex-grow flex items-center bg-black/40 border border-white/5 rounded-full px-2.5 py-1.5 transition-all min-w-[120px]">
+                        <input
+                          type="text"
+                          value={chatInputValue}
+                          onChange={(e) => setChatInputValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSendChatMessage();
+                            }
+                          }}
+                          placeholder="أرسل رسالة للمجلس..."
+                          className="flex-grow bg-transparent text-[10px] text-slate-100 placeholder-slate-500 text-right outline-none w-full"
+                          dir="rtl"
+                          id="chat-interactive-input"
+                        />
+                        {/* Smiley icon trigger */}
+                        <button
+                          onClick={() => alert('مجموعة الملصقات والرموز التعبيرية ستتوفر قريباً مع حزمة IM SDK!')}
+                          className="text-slate-400 hover:text-white mx-1 text-xs shrink-0"
+                        >
+                          😊
+                        </button>
+                        <button
+                          onClick={handleSendChatMessage}
+                          className={`p-1 rounded-full text-white transition active:scale-90 cursor-pointer flex items-center justify-center shrink-0 ${
+                            chatInputValue.trim() 
+                              ? 'bg-purple-600' 
+                              : 'text-slate-500'
+                          }`}
+                          title="إرسال"
+                          id="chat-send-btn"
+                        >
+                          <Send className="w-3 h-3" />
+                        </button>
+                      </div>
 
-                    {/* Middle-Right Controls */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      
-                      {/* Mic Speak Controller Button */}
+                      {/* Mic Speak Controller Button (Right next to Input box) */}
                       <button
                         onClick={() => {
                           const userSeatIndex = activeRoom.seats.findIndex(s => s.userId === currentUser.id);
+                          
                           if (userSeatIndex === -1) {
-                            alert('يرجى الضغط على أحد مقاعد الطابق السفلي الشاغرة أولاً لتصعد وتتمكن من التحدث والمشاركة بالصوت!');
+                            // Automatically find first empty, unlocked seat to sit them down and open their mic!
+                            const firstEmptySeatIndex = activeRoom.seats.findIndex(s => s.userId === null && !s.isLocked);
+                            if (firstEmptySeatIndex !== -1) {
+                              const updatedSeats = [...activeRoom.seats];
+                              updatedSeats[firstEmptySeatIndex] = { 
+                                ...updatedSeats[firstEmptySeatIndex], 
+                                userId: currentUser.id, 
+                                isMuted: false // Start unmuted (talking!)
+                              };
+                              const updatedRoom = { ...activeRoom, seats: updatedSeats };
+                              setActiveRoom(updatedRoom);
+                              setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
+
+                              // Broadcast via WebSocket
+                              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                wsRef.current.send(JSON.stringify({
+                                  action: 'seats_update',
+                                  roomId: activeRoom.id,
+                                  seats: updatedSeats
+                                }));
+                              }
+                            } else {
+                              alert('عذراً، جميع المقاعد ممتلئة حالياً! يرجى الانتظار لحين مغادرة أحد المتحدثين لكي تتمكن من الصعود والتحدث.');
+                            }
                           } else {
+                            // User is already on a seat, toggle their mute state
                             const seat = activeRoom.seats[userSeatIndex];
+                            const nextMuteStatus = !seat.isMuted;
                             const updatedSeats = [...activeRoom.seats];
-                            updatedSeats[userSeatIndex] = { ...seat, isMuted: !seat.isMuted };
+                            updatedSeats[userSeatIndex] = { ...seat, isMuted: nextMuteStatus };
                             const updatedRoom = { ...activeRoom, seats: updatedSeats };
                             setActiveRoom(updatedRoom);
                             setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
-                            
-                            if (seat.isMuted) {
-                              setSpeakingSeatIndex(userSeatIndex);
-                              setTimeout(() => setSpeakingSeatIndex(null), 3000);
+
+                            // Broadcast via WebSocket
+                            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                              wsRef.current.send(JSON.stringify({
+                                  action: 'seats_update',
+                                  roomId: activeRoom.id,
+                                  seats: updatedSeats
+                              }));
                             }
                           }
                         }}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all ${
+                        className={`w-8 h-8 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all shrink-0 ${
                           activeRoom.seats.some(s => s.userId === currentUser.id)
-                            ? activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted
-                              ? 'bg-red-950/40 border border-red-500/30 text-red-300'
-                              : 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 animate-pulse'
-                            : 'bg-slate-900 text-slate-400 border border-white/5'
+                            ? !activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted
+                              ? 'bg-emerald-600 border border-emerald-400 text-white animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)]'
+                              : 'bg-red-950/50 border border-red-500/30 text-red-300'
+                            : 'bg-slate-900/80 text-slate-400 border border-white/5 hover:border-purple-500/30'
                         }`}
+                        title="تشغيل/كتم المايك الخاص بك"
                         id="mic-speak-btn"
                       >
-                        {activeRoom.seats.some(s => s.userId === currentUser.id) && activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted ? (
-                          <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                        {activeRoom.seats.some(s => s.userId === currentUser.id) && !activeRoom.seats.find(s => s.userId === currentUser.id)?.isMuted ? (
+                          <Mic className="w-3.5 h-3.5 text-white" />
                         ) : (
-                          <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <MicOff className="w-3.5 h-3.5 text-red-400" />
                         )}
                       </button>
 
-                      {/* E2EE Shield (Green Background Circle Button) */}
+                      {/* Speaker Toggle Button (Right next to Mic Button) */}
                       <button
-                        onClick={() => setIsE2EEDrawerOpen(true)}
-                        className={`w-8 h-8 rounded-full border flex items-center justify-center cursor-pointer active:scale-90 transition-all ${
-                          isE2EEEnabled 
-                            ? 'bg-emerald-900/60 border-emerald-500/30 text-emerald-300 hover:text-emerald-100' 
-                            : 'bg-slate-900/60 border-slate-700/30 text-slate-400 hover:text-slate-200'
+                        onClick={() => {
+                          setIsRoomAudioDeafened(!isRoomAudioDeafened);
+                        }}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-all shrink-0 ${
+                          isRoomAudioDeafened
+                            ? 'bg-red-950/50 border border-red-500/30 text-red-300'
+                            : 'bg-purple-600 border border-purple-400 text-white shadow-[0_0_10px_rgba(124,58,237,0.5)]'
                         }`}
-                        title="إعدادات التشفير التام E2EE"
-                        id="native-e2ee-trigger"
+                        title="كتم/تشغيل مكبر صوت المجلس"
+                        id="speaker-toggle-btn"
                       >
-                        <Shield className="w-3.5 h-3.5" />
+                        {isRoomAudioDeafened ? (
+                          <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                        ) : (
+                          <Volume2 className="w-3.5 h-3.5 text-white" />
+                        )}
                       </button>
 
-                      {/* Settings (Purple Background Circle Button) */}
-                      <button
-                        onClick={() => setIsAgoraDrawerOpen(true)}
-                        className="w-8 h-8 rounded-full bg-purple-900/60 border border-purple-500/30 flex items-center justify-center text-purple-300 hover:text-white cursor-pointer active:scale-90 transition-all"
-                        id="native-settings-trigger"
-                      >
-                        <Settings className="w-3.5 h-3.5" />
-                      </button>
-
-                      {/* Gift Selection Trigger (Orange/Gold Circular Gradient Button) */}
+                      {/* Prominent, colorful 2D virtual gift launcher button */}
                       <button
                         onClick={() => setIsGiftDrawerOpen(true)}
-                        className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-slate-950 cursor-pointer active:scale-90 transition-all font-bold text-xs"
+                        className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-500 via-orange-500 to-red-500 text-white cursor-pointer active:scale-95 hover:scale-105 transition-all shadow-[0_0_12px_rgba(245,158,11,0.6)] flex items-center justify-center shrink-0 border-2 border-yellow-300/60 animate-[pulse_2.2s_infinite]"
+                        title="إرسال هدايا المجلس الفاخرة"
                         id="native-gift-trigger"
                       >
-                        🎁
+                        <span className="text-xl drop-shadow-[0_1px_3px_rgba(0,0,0,0.5)]">🎁</span>
                       </button>
-
-                      {/* Seat requests queue queue (Blue Background Circle Button with Sofa Icon and Badge "23" ) */}
-                      <button
-                        onClick={() => setIsQueueDrawerOpen(true)}
-                        className="w-8 h-8 rounded-full bg-blue-600/90 border border-blue-500/30 flex items-center justify-center text-white cursor-pointer active:scale-90 transition-all relative"
-                        id="native-queue-trigger"
-                      >
-                        {/* Seat Queue Armchair Icon */}
-                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white">
-                          <path d="M19 10h-1c0-1.65-1.35-3-3-3H9c-1.65 0-3 1.35-3 3H5c-1.65 0-3 1.35-3 3v4c0 1.1.9 2 2 2h1v1c0 .55.45 1 1 1s1-.45 1-1v-1h8v1c0 .55.45 1 1 1s1-.45 1-1v-1h1c1.1 0 2-.9 2-2v-4c0-1.65-1.35-3-3-3zM6 14h12v3H6v-3z" />
-                        </svg>
-                        {/* Red Notification Badge "23" */}
-                        <span className="absolute -top-1.5 -left-1.5 bg-red-500 border border-slate-950 text-white font-extrabold text-[7px] px-1 rounded-full">
-                          23
-                        </span>
-                      </button>
-
                     </div>
-
                   </div>
 
                   {/* Seat Actions Modal sheet (when selectedSeatIndex is active) */}
@@ -3736,7 +4719,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* NATIVE AGORA AUDIO CONNECTION & LATENCY CONFIG DRAWER */}
+                  {/* NATIVE AGORA RTC AUDIO CONNECTION & LOGS DRAWER */}
                   {isAgoraDrawerOpen && (
                     <div className="absolute inset-x-0 bottom-0 bg-[#05030f]/98 backdrop-blur-xl border-t border-purple-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans">
                       <div className="flex justify-between items-center border-b border-purple-950/50 pb-2 mb-3">
@@ -3747,85 +4730,73 @@ export default function App() {
                           إغلاق
                         </button>
                         <h4 className="text-xs font-bold text-white flex items-center gap-1.5 font-sans">
-                          🎙️ إعدادات محرك الصوت (Agora RTC SFU)
+                          🎙️ إعدادات ومحرك الصوت (Agora RTC Engine)
                         </h4>
                       </div>
 
                       {/* Server Status Header */}
-                      <div className="p-3 bg-[#03000a] rounded-xl border border-emerald-500/20 mb-3 space-y-1.5">
+                      <div className="p-3 bg-[#03000a] rounded-xl border border-blue-500/20 mb-3 space-y-1.5">
                         <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400">حالة خادم الصوت:</span>
+                          <span className="text-[10px] text-slate-400">حالة الاتصال بالبث:</span>
                           <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                            🟢 متصل عبر Agora SFU 2.0
+                            🟢 متصل وآمن عبر Agora Web SDK 4.x
                           </span>
                         </div>
                         <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400">جودة الترميز الصوتي:</span>
-                          <span className="text-[10px] text-amber-300 font-mono font-bold">Opus 48kHz Stereo (High Fidelity)</span>
+                          <span className="text-[10px] text-slate-400">اسم القناة (Channel Name):</span>
+                          <span className="text-[10px] text-blue-300 font-mono font-bold">{agoraStatus.roomId || "N/A"}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-400">معرف التطبيق (Agora App ID):</span>
+                          <span className="text-[10px] text-amber-300 font-mono font-bold">
+                            {agoraStatus.appId ? `${agoraStatus.appId.substring(0, 10)}...` : "N/A"}
+                          </span>
                         </div>
                       </div>
 
                       {/* Technical latency parameters */}
-                      <div className="grid grid-cols-2 gap-2 mb-4">
-                        <div className="p-2.5 bg-[#03000a] rounded-lg border border-purple-500/10">
+                      <div className="grid grid-cols-2 gap-2 mb-3">
+                        <div className="p-2 bg-[#03000a] rounded-lg border border-purple-500/10">
                           <span className="text-[9px] text-slate-400 block mb-0.5">زمن الاستجابة (Latency):</span>
-                          <span className="text-xs font-mono font-black text-emerald-400">{agoraLatency}ms (Zero Delay)</span>
+                          <span className="text-xs font-mono font-black text-emerald-400">{agoraStatus.latency}ms (Ultra-Low)</span>
                         </div>
-                        <div className="p-2.5 bg-[#03000a] rounded-lg border border-purple-500/10">
-                          <span className="text-[9px] text-slate-400 block mb-0.5">فقدان حزم البث (Loss):</span>
-                          <span className="text-xs font-mono font-black text-slate-300">{agoraPacketLoss.toFixed(1)}%</span>
+                        <div className="p-2 bg-[#03000a] rounded-lg border border-purple-500/10">
+                          <span className="text-[9px] text-slate-400 block mb-0.5">صلاحية المستخدم الحالية:</span>
+                          <span className="text-xs font-bold text-amber-400">
+                            {agoraStatus.role === 'ClientRoleBroadcaster' ? '🎙️ مذيع (Broadcaster)' : '🎧 مستمع (Audience)'}
+                          </span>
                         </div>
                       </div>
 
-                      {/* Audio Optimization Toggles */}
-                      <div className="space-y-2 border-t border-purple-950/40 pt-3 mb-2">
-                        <span className="text-[10px] text-slate-400 block mb-1">تعديل جودة بث الغرفة الصوتية:</span>
-                        
-                        <div className="flex justify-between items-center p-2 bg-[#03000a]/60 rounded-lg">
-                          <button
-                            onClick={() => setIsEchoCancellation(!isEchoCancellation)}
-                            className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                              isEchoCancellation 
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
-                                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                            }`}
-                          >
-                            {isEchoCancellation ? 'مفعّل (Active)' : 'ملغى (Disabled)'}
-                          </button>
-                          <span className="text-[10px] text-slate-200">إلغاء الصدى الصوتي (Echo Cancellation)</span>
+                      {/* Live Agora Web SDK Logger Terminal */}
+                      <div className="mb-3">
+                        <span className="text-[9px] text-slate-400 block mb-1">سجل استدعاءات Agora RTC SDK الحية:</span>
+                        <div className="bg-black/80 rounded-xl p-2.5 border border-purple-950/60 h-28 overflow-y-auto font-mono text-[9.5px] space-y-1 scrollbar-thin scrollbar-thumb-purple-900 select-all" dir="ltr">
+                          {agoraStatus.logs.length === 0 ? (
+                            <p className="text-slate-600 italic text-center pt-8">لا يوجد استدعاءات نشطة حالياً</p>
+                          ) : (
+                            agoraStatus.logs.map((log, index) => (
+                              <p key={index} className="text-cyan-400 text-left leading-normal border-b border-white/5 pb-0.5">
+                                {log}
+                              </p>
+                            ))
+                          )}
                         </div>
+                      </div>
 
+                      {/* Micro-Actions to simulate Agora events */}
+                      <div className="space-y-2 border-t border-purple-950/40 pt-3 mb-1">
                         <div className="flex justify-between items-center p-2 bg-[#03000a]/60 rounded-lg">
-                          <button
-                            onClick={() => setIsNoiseCancellation(!isNoiseCancellation)}
-                            className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                              isNoiseCancellation 
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
-                                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                            }`}
-                          >
-                            {isNoiseCancellation ? 'مفعّل (Active)' : 'ملغى (Disabled)'}
-                          </button>
-                          <span className="text-[10px] text-slate-200">تصفية الضوضاء المحيطية (Noise Suppression)</span>
-                        </div>
-
-                        <div className="flex justify-between items-center p-2 bg-[#03000a]/60 rounded-lg">
+                          <span className="text-[10px] text-slate-300">محاكاة اختبار جودة الصوت المحلي (Microphone Test)</span>
                           <button
                             onClick={() => {
-                              setIsVoiceConnected(!isVoiceConnected);
-                              if (isVoiceConnected) {
-                                setSpeakingSeatIndex(null);
-                              }
+                              addAgoraLog("AgoraRTC.startMicrophoneTest() - جاري فحص ترددات اللاقط المحلي...");
+                              setTimeout(() => addAgoraLog("AgoraRTC.startMicrophoneTest() - انتهى الفحص بنجاح 🟢 جودة عالية جداً"), 800);
                             }}
-                            className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                              isVoiceConnected 
-                                ? 'bg-[#7C3AED]/20 text-[#C026D3] border border-purple-500/30' 
-                                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                            }`}
+                            className="bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-200 text-[8.5px] font-bold px-2.5 py-1 rounded cursor-pointer"
                           >
-                            {isVoiceConnected ? 'متصل (Live)' : 'منفصل (Off)'}
+                            بدء الفحص
                           </button>
-                          <span className="text-[10px] text-slate-200">اتصال قناة البث الصوتي (Agora RTC Channel)</span>
                         </div>
                       </div>
                     </div>
@@ -3921,6 +4892,89 @@ export default function App() {
                             محاكاة ضعف الشبكة وفقدان الحزم
                           </span>
                         </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* SYSTEM OF APPROVED CHARGING AGENTS DRAWER */}
+                  {isAgentsHubOpen && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[#0c0a15]/98 backdrop-blur-xl border-t border-amber-500/40 rounded-t-[32px] p-4.5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto">
+                      <div className="flex justify-between items-center border-b border-slate-800 pb-2.5 mb-3.5">
+                        <button
+                          onClick={() => setIsAgentsHubOpen(false)}
+                          className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3.5 py-1 rounded-full border border-slate-800 cursor-pointer font-black"
+                        >
+                          إغلاق
+                        </button>
+                        <h4 className="text-sm font-black text-white flex items-center gap-1.5 font-sans">
+                          💎 شبكة الوكلاء المعتمدين (Charging Agents)
+                        </h4>
+                      </div>
+
+                      <div className="text-xs text-slate-300 leading-relaxed mb-4 text-right space-y-1">
+                        <p>لتعبئة وشحن حسابك بالكوينزات، يرجى التواصل مع أحد وكلائنا المعتمدين المدرجين أدناه عبر تطبيق <strong className="text-emerald-400">واتساب</strong>.</p>
+                        <p className="text-[10px] text-slate-400">الدفع آمن ومباشر كاش (فودافون كاش، زين كاش، أو تحويل بنكي محلي) وسيتم إرسال الكوينزات لحسابك فورياً.</p>
+                      </div>
+
+                      {/* Display direct enter for agent itself */}
+                      {(currentUser?.role === 'agent' || currentUser?.role === 'admin' || currentUser?.isAgent) && (
+                        <div className="bg-gradient-to-r from-amber-600/20 to-purple-600/20 border border-amber-500/30 p-3 rounded-xl mb-4 flex justify-between items-center">
+                          <button
+                            onClick={() => {
+                              setIsAgentsHubOpen(false);
+                              setCurrentScreen('agent_pin');
+                            }}
+                            className="bg-amber-500 text-slate-950 text-[10px] font-black px-3 py-1.5 rounded-lg transition hover:scale-105"
+                          >
+                            لوحة تحكم الوكيل
+                          </button>
+                          <div className="text-right">
+                            <span className="text-[10px] font-black text-amber-300 block">لقد تعرّف النظام على حسابك كوكيل معتمد 🛡️</span>
+                            <span className="text-[9px] text-slate-400">اضغط للدخول إلى لوحة الشحن المخصصة للوكلاء</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Agents List Grid */}
+                      <div className="space-y-2.5">
+                        {agentsHub.length === 0 ? (
+                          <div className="bg-slate-900/40 p-6 rounded-xl text-center text-slate-400 text-xs border border-dashed border-slate-800">
+                            لا يوجد وكلاء متاحين حالياً في منطقتك.
+                          </div>
+                        ) : (
+                          agentsHub.map((agent) => (
+                            <div key={agent.agent_id} className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex justify-between items-center hover:border-amber-500/20 transition-all duration-200">
+                              <a
+                                href={agent.contact_whatsapp}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10px] px-3.5 py-1.5 rounded-lg transition-all duration-200 flex items-center gap-1.5 cursor-pointer shadow-sm shadow-emerald-950/40 animate-pulse"
+                              >
+                                <span className="text-xs">💬</span>
+                                شحن واتساب
+                              </a>
+                              <div className="flex items-center gap-3">
+                                <div className="text-right">
+                                  <h5 className="text-xs font-black text-white">{agent.agent_name}</h5>
+                                  <div className="flex items-center gap-1.5 justify-end mt-0.5">
+                                    <span className="text-[9px] text-slate-400 font-mono">ID: {agent.agent_id}</span>
+                                    <span className="text-[8px] bg-emerald-950/60 text-emerald-400 border border-emerald-500/20 px-1 py-0.2 rounded font-black">
+                                      🟢 موثق ونشط
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="w-9 h-9 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-lg select-none shadow-inner">
+                                  👤
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-slate-900 flex justify-between items-center">
+                        <span className="text-[8px] text-slate-500">نظام حماية صدى العرب المالي المعتمد</span>
+                        <span className="text-[9px] text-amber-500 flex items-center gap-1">🛡️ حماية كوينز بنسبة 100%</span>
                       </div>
                     </div>
                   )}

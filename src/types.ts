@@ -11,6 +11,7 @@ export interface AppUser {
   coins: number;
   xp: number;
   isAgent?: boolean;
+  role?: 'user' | 'agent' | 'admin';
   bio?: string;
   followers?: string[];
   following?: string[];
