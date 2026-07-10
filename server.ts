@@ -8,6 +8,7 @@ import { getDb, saveDb, initDb, DatabaseSchema } from "./server/db";
 import { AppUser, VoiceRoom, AgentTransferLog, VoiceSeat } from "./src/types";
 import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 
 // Initialize database
 initDb();
@@ -33,6 +34,23 @@ async function checkFirestoreAccess() {
     } else {
       app = apps[0];
     }
+
+    // Programmatically ensure authorized domains are set correctly in Firebase Auth
+    try {
+      const authInstance = getAuth(app);
+      await authInstance.projectConfigManager().updateProjectConfig({
+        authorizedDomains: [
+          "localhost",
+          "karem-rx44.onrender.com",
+          "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698.firebaseapp.com",
+          "ai-studio-sadaalarabvoiceb-5f452604-580f-4265-ab18-da9c404b3698.web.app"
+        ]
+      });
+      console.log("Firebase Auth authorized domains updated successfully programmatically.");
+    } catch (authError) {
+      console.warn("Failed to update Firebase Auth authorized domains automatically:", authError);
+    }
+
     const tempDb = getFirestore(app, customDbId);
     
     // Attempt a lightweight read operation to verify credentials and API status.

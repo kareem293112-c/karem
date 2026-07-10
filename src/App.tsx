@@ -485,9 +485,37 @@ export default function App() {
             setCurrentUser(loggedUser);
             setCurrentScreen('explore');
             await fetchDbStates();
+          } else {
+            console.warn("Backend sync returned non-ok, using fallback user info so user is not stuck:", res.status);
+            const fallbackUser = {
+              id: firebaseUser.uid,
+              name: defaultName,
+              avatar: defaultAvatar,
+              level: 1,
+              coins: 1000,
+              xp: 0,
+              role: 'user',
+              bio: 'عضو مميز في صدى العرب ☕'
+            };
+            setCurrentUser(fallbackUser);
+            setCurrentScreen('explore');
+            await fetchDbStates();
           }
         } catch (err) {
-          console.error("Error syncing authenticated user:", err);
+          console.error("Error syncing authenticated user, using fallback user info so user is not stuck:", err);
+          const fallbackUser = {
+            id: firebaseUser.uid,
+            name: defaultName,
+            avatar: defaultAvatar,
+            level: 1,
+            coins: 1000,
+            xp: 0,
+            role: 'user',
+            bio: 'عضو مميز في صدى العرب ☕'
+          };
+          setCurrentUser(fallbackUser);
+          setCurrentScreen('explore');
+          await fetchDbStates();
         }
       } else {
         // Logged out
