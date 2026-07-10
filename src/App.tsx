@@ -1292,68 +1292,10 @@ export default function App() {
     return () => clearInterval(speakerInterval);
   }, [currentScreen, activeRoom, isRoomAudioDeafened]);
 
-  // Dynamic Room Interactive Live Streams simulation
+  // Dynamic Room Interactive Live Streams simulation - DISABLED BY USER REQUEST FOR PURE REAL-TIME EXPERIENCE
   useEffect(() => {
-    if (currentScreen !== 'room' || !activeRoom || !currentUser) return;
-
-    const eventInterval = setInterval(() => {
-      const roll = Math.random();
-      
-      // 1. VIP entrance trigger (30% chance)
-      if (roll < 0.3) {
-        const vips = [
-          { name: 'الشيخ بندر آل سعود', level: 45 },
-          { name: 'مريم العتيبي 💎', level: 28 },
-          { name: 'أبو تركي الرياض', level: 39 },
-          { name: 'سلطان نجد 🔥', level: 50 }
-        ];
-        const randomVip = vips[Math.floor(Math.random() * vips.length)];
-        triggerVipEntrance(randomVip.name, randomVip.level);
-      } 
-      // 2. Simulated user sends a random gift (40% chance)
-      else if (roll < 0.7) {
-        // Pick random occupant (someone on the seats, or host)
-        const occupiedSeats = activeRoom.seats.filter(s => s.userId !== null && s.userId !== currentUser.id);
-        if (occupiedSeats.length > 0) {
-          const randomSeat = occupiedSeats[Math.floor(Math.random() * occupiedSeats.length)];
-          const randomOccupant = users.find(u => u.id === randomSeat.userId);
-          const randomGift = GIFTS[Math.floor(Math.random() * GIFTS.length)];
-          
-          if (randomOccupant) {
-            // Spawn float animation
-            spawnFloatingGift(randomGift.icon);
-            
-            // Log/notify room chat dynamically
-            setRoomMessages(prev => [
-              ...prev,
-              {
-                sender: randomOccupant.name,
-                text: `أرسل هدية: [ ${randomGift.arabicName} ${randomGift.icon} ] للمجلس 💖`,
-                color: 'text-purple-300 font-medium',
-                type: 'chat'
-              }
-            ]);
-            
-            // Let's increment room XP to show live data stream progression
-            const extraXp = randomGift.xpReward;
-            setActiveRoom(prev => {
-              if (!prev) return null;
-              const nextRoomXp = getXpForNextRoomLevel(prev.level);
-              let newLvl = prev.level;
-              let newXp = prev.xp + extraXp;
-              if (newXp >= nextRoomXp) {
-                newLvl += 1;
-                newXp = newXp - nextRoomXp;
-              }
-              return { ...prev, level: newLvl, xp: newXp };
-            });
-          }
-        }
-      }
-    }, 12000);
-
-    return () => clearInterval(eventInterval);
-  }, [currentScreen, activeRoom, currentUser, users]);
+    // Simulated background event triggers have been disabled to ensure 100% real interactions and real user accounts.
+  }, []);
 
   // Trigger floating gift animation
   const spawnFloatingGift = (icon: string) => {
@@ -4523,7 +4465,12 @@ export default function App() {
 
                   {/* PURE NATIVE GIFTING BOTTOM SHEET (No Web Simulator Controls) */}
                   {isGiftDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#0c071fa6] backdrop-blur-xl border-t border-purple-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsGiftDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#0c071fa6] backdrop-blur-xl border-t border-purple-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right">
                       <div className="flex justify-between items-center border-b border-purple-950/40 pb-2 mb-3">
                         <button
                           onClick={() => setIsGiftDrawerOpen(false)}
@@ -4655,11 +4602,17 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* SEATS REQUESTS QUEUE BOTTOM SHEET */}
                   {isQueueDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#0c071fa6] backdrop-blur-xl border-t border-purple-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsQueueDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#0c071fa6] backdrop-blur-xl border-t border-purple-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right">
                       <div className="flex justify-between items-center border-b border-purple-950/40 pb-2 mb-3 font-sans">
                         <button
                           onClick={() => setIsQueueDrawerOpen(false)}
@@ -4737,11 +4690,17 @@ export default function App() {
                         ))}
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* END-TO-END ENCRYPTION (E2EE) MANAGEMENT DRAWER */}
                   {isE2EEDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#04020b]/99 backdrop-blur-xl border-t border-emerald-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans overflow-hidden" dir="rtl">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsE2EEDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#04020b]/99 backdrop-blur-xl border-t border-emerald-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans overflow-hidden" dir="rtl">
                       {/* Drawer Header */}
                       <div className="flex justify-between items-center border-b border-emerald-950/40 pb-2 mb-3">
                         <button
@@ -4911,11 +4870,17 @@ export default function App() {
                       </div>
 
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* NATIVE AGORA RTC AUDIO CONNECTION & LOGS DRAWER */}
                   {isAgoraDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#05030f]/98 backdrop-blur-xl border-t border-purple-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsAgoraDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#05030f]/98 backdrop-blur-xl border-t border-purple-500/40 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans">
                       <div className="flex justify-between items-center border-b border-purple-950/50 pb-2 mb-3">
                         <button
                           onClick={() => setIsAgoraDrawerOpen(false)}
@@ -4994,11 +4959,17 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* ROOM SETTINGS DRAWER */}
                   {isRoomSettingsDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#0f0a1c] backdrop-blur-2xl border-t border-purple-500/45 rounded-t-[32px] p-5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto" dir="rtl">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsRoomSettingsDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#0f0a1c] backdrop-blur-2xl border-t border-purple-500/45 rounded-t-[32px] p-5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto" dir="rtl">
                       {/* Header */}
                       <div className="flex justify-between items-center border-b border-purple-950/40 pb-3 mb-4">
                         <button
@@ -5128,11 +5099,17 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* ADMIN SIMULATION & CONTROL WHEEL DRAWER */}
                   {isAdminDrawerOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#120722]/98 backdrop-blur-xl border-t border-amber-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsAdminDrawerOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#120722]/98 backdrop-blur-xl border-t border-amber-500/30 rounded-t-[32px] p-4 z-50 animate-fade-in shadow-2xl text-right font-sans">
                       <div className="flex justify-between items-center border-b border-purple-950/50 pb-2 mb-3">
                         <button
                           onClick={() => setIsAdminDrawerOpen(false)}
@@ -5222,11 +5199,17 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                   {/* SYSTEM OF APPROVED CHARGING AGENTS DRAWER */}
                   {isAgentsHubOpen && (
-                    <div className="absolute inset-x-0 bottom-0 bg-[#0c0a15]/98 backdrop-blur-xl border-t border-amber-500/40 rounded-t-[32px] p-4.5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto">
+                    <>
+                      <div
+                        className="absolute inset-0 bg-black/60 z-40 animate-fade-in cursor-pointer"
+                        onClick={() => setIsAgentsHubOpen(false)}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-[#0c0a15]/98 backdrop-blur-xl border-t border-amber-500/40 rounded-t-[32px] p-4.5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto">
                       <div className="flex justify-between items-center border-b border-slate-800 pb-2.5 mb-3.5">
                         <button
                           onClick={() => setIsAgentsHubOpen(false)}
@@ -5305,7 +5288,8 @@ export default function App() {
                         <span className="text-[9px] text-amber-500 flex items-center gap-1">🛡️ حماية كوينز بنسبة 100%</span>
                       </div>
                     </div>
-                  )}
+                  </>
+                )}
 
                 </div>
               )}
