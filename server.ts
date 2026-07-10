@@ -234,17 +234,16 @@ wss.on("connection", (ws: CustomWebSocket) => {
         const savedRoomId = ws.roomId;
         if (ws.roomId && roomClients.has(ws.roomId)) {
           roomClients.get(ws.roomId)!.delete(ws);
-          broadcastToRoom(ws.roomId, {
-            type: "system_message",
-            text: `غادر ${ws.userName || 'مستخدم'} المجلس`,
-            userId: ws.userId,
-            userName: ws.userName,
-            timestamp: new Date().toISOString()
-          });
         }
         if (savedRoomId) {
           broadcastRoomUsers(savedRoomId);
         }
+      }
+
+      else if (action === "register") {
+        ws.userId = userId;
+        ws.userName = userName;
+        console.log(`المستخدم ${userName} (${userId}) سجل اتصاله العام بالـ WebSocket`);
       }
 
       else if (action === "seats_update") {
@@ -371,13 +370,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
     const savedRoomId = ws.roomId;
     if (ws.roomId && roomClients.has(ws.roomId)) {
       roomClients.get(ws.roomId)!.delete(ws);
-      broadcastToRoom(ws.roomId, {
-        type: "system_message",
-        text: `غادر ${ws.userName || 'مستخدم'} المجلس`,
-        userId: ws.userId,
-        userName: ws.userName,
-        timestamp: new Date().toISOString()
-      });
     }
     if (savedRoomId) {
       broadcastRoomUsers(savedRoomId);
@@ -1827,16 +1819,36 @@ app.post("/api/messages", (req, res) => {
   };
   
   const msgStr = JSON.stringify(wsMessage);
-  // Iterate over all connected sockets across all rooms
-  for (const [roomId, clients] of roomClients) {
-    for (const client of clients) {
+  // Iterate over all globally connected sockets
+  if (wss && wss.clients) {
+    wss.clients.forEach((client: any) => {
       if (client.readyState === WebSocket.OPEN && (client.userId === receiverId || client.userId === senderId)) {
         client.send(msgStr);
       }
-    }
+    });
   }
 
   res.json({ success: true, message: newMessage });
+});
+
+// Mark Private Messages as Read
+app.post("/api/messages/read", (req, res) => {
+  const { userId, otherUserId } = req.body;
+  if (!userId || !otherUserId) {
+    return res.status(400).json({ error: "المستخدم والطرف الآخر مطلوبان" });
+  }
+
+  const db = getDb();
+  if (db.privateMessages) {
+    db.privateMessages = db.privateMessages.map(m => {
+      if (m.receiverId === userId && m.senderId === otherUserId) {
+        return { ...m, isRead: true };
+      }
+      return m;
+    });
+    saveDb(db);
+  }
+  res.json({ success: true });
 });
 
 // ==================== VITE & STATIC FILES SERVING ====================

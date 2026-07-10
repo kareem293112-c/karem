@@ -49,6 +49,7 @@ export interface PrivateMessage {
   isEncrypted?: boolean;
   rawCiphertext?: string;
   iv?: string;
+  isRead?: boolean;
 }
 
 export interface VoiceSeat {

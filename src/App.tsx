@@ -246,6 +246,7 @@ export default function App() {
   const [e2eePassphrase, setE2eePassphrase] = useState('SadaArabE2EESecureKey');
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [derivedKey, setDerivedKey] = useState<CryptoKey | null>(null);
+  const [privateKey, setPrivateKey] = useState<CryptoKey | null>(null);
   const [e2eeAuditLogs, setE2eeAuditLogs] = useState<string[]>([]);
   const [showCiphertextInFeed, setShowCiphertextInFeed] = useState(false);
   const [clientKeyPair, setClientKeyPair] = useState<CryptoKeyPair | null>(null);
@@ -546,6 +547,31 @@ export default function App() {
     }
   }, [currentUser?.id, isPrivateInboxOpen, activePrivateChatUser?.id]);
 
+  // Mark messages as read when inbox opens or active chat user changes
+  useEffect(() => {
+    if (isPrivateInboxOpen && activePrivateChatUser && currentUser) {
+      // Mark as read locally
+      setPrivateMessages(prev => prev.map(msg => {
+        if (msg.senderId === activePrivateChatUser.id && msg.receiverId === currentUser.id) {
+          return { ...msg, isRead: true };
+        }
+        return msg;
+      }));
+
+      // Call API to mark as read on backend
+      fetch('/api/messages/read', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          otherUserId: activePrivateChatUser.id
+        })
+      }).catch(err => console.error('Error marking messages as read:', err));
+    }
+  }, [isPrivateInboxOpen, activePrivateChatUser?.id, currentUser?.id]);
+
   // Send Private Message Handler
   const handleSendPrivateMessage = async () => {
     if (!currentUser || !activePrivateChatUser || !newPrivateMessageInput.trim()) return;
@@ -568,8 +594,8 @@ export default function App() {
         iv: ''
       };
       
-      if (isE2EEEnabled && derivedKey) {
-        const { ciphertext, iv: cryptoIv } = await encryptMessage(textToSend, derivedKey);
+      if (isE2EEEnabled && privateKey) {
+        const { ciphertext, iv: cryptoIv } = await encryptMessage(textToSend, privateKey);
         payload.isEncrypted = true;
         payload.rawCiphertext = ciphertext;
         payload.iv = cryptoIv;
@@ -708,6 +734,25 @@ export default function App() {
       isMounted = false;
     };
   }, [activeRoom?.id, e2eePassphrase]);
+
+  // Derive Private Message Key
+  useEffect(() => {
+    let isMounted = true;
+    const initPrivateKey = async () => {
+      try {
+        const key = await deriveRoomKey(e2eePassphrase, "GlobalPrivateChat");
+        if (isMounted) {
+          setPrivateKey(key);
+        }
+      } catch (err) {
+        console.error("Error deriving global private message key:", err);
+      }
+    };
+    initPrivateKey();
+    return () => {
+      isMounted = false;
+    };
+  }, [e2eePassphrase]);
 
   // Helper to downsample audio to reduce WebSocket payload size and bandwidth usage
   const resampleAudio = (audioBuffer: Float32Array, fromRate: number, toRate: number): Float32Array => {
@@ -902,9 +947,21 @@ export default function App() {
     }
   };
 
-  // WebSocket lifecycle listener
+  // Refs to avoid stale closures in WebSocket event handlers
+  const activeRoomRef = useRef(activeRoom);
+  const currentUserRef = useRef(currentUser);
+
   useEffect(() => {
-    if (!activeRoom || !currentUser) {
+    activeRoomRef.current = activeRoom;
+  }, [activeRoom]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  // WebSocket lifecycle listener (persistent connection based on currentUser)
+  useEffect(() => {
+    if (!currentUser) {
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -919,21 +976,37 @@ export default function App() {
 
     ws.onopen = () => {
       console.log('Real-time synchronization connected!');
+      // Register global connection
       ws.send(JSON.stringify({
-        action: 'join',
-        roomId: activeRoom.id,
+        action: 'register',
         userId: currentUser.id,
         userName: currentUser.name
       }));
+
+      // Join room if already inside one
+      const currentActiveRoom = activeRoomRef.current;
+      if (currentActiveRoom) {
+        ws.send(JSON.stringify({
+          action: 'join',
+          roomId: currentActiveRoom.id,
+          userId: currentUser.id,
+          userName: currentUser.name
+        }));
+      }
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        const currentActiveRoom = activeRoomRef.current;
+        const currentU = currentUserRef.current;
+
         if (data.type === 'seats_changed') {
           const padded = padSeats(data.seats);
           setActiveRoom(prev => prev ? { ...prev, seats: padded } : null);
-          setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, seats: padded } : r));
+          if (currentActiveRoom) {
+            setRooms(prev => prev.map(r => r.id === currentActiveRoom.id ? { ...r, seats: padded } : r));
+          }
         }
 
         else if (data.type === 'room_details_changed') {
@@ -971,7 +1044,7 @@ export default function App() {
             {
               sender: data.senderName,
               text: data.text,
-              color: data.senderId === currentUser.id ? 'text-amber-400' : 'text-purple-300 font-medium',
+              color: currentU && data.senderId === currentU.id ? 'text-amber-400' : 'text-purple-300 font-medium',
               type: 'chat',
               ...extraProps
             }
@@ -1008,7 +1081,7 @@ export default function App() {
         else if (data.type === 'agent_balance_update') {
           setAgentBalance(data.agentBalance);
           setTransactions(data.transactions);
-          if (currentUser.id === data.targetUserId) {
+          if (currentU && currentU.id === data.targetUserId) {
             setCurrentUser(prev => prev ? { ...prev, coins: data.targetUserCoins } : null);
           }
           fetchDbStates();
@@ -1039,6 +1112,25 @@ export default function App() {
         wsRef.current = null;
       }
     };
+  }, [currentUser?.id]);
+
+  // Synchronize room membership over persistent WebSocket connection
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !currentUser) return;
+
+    if (activeRoom) {
+      ws.send(JSON.stringify({
+        action: 'join',
+        roomId: activeRoom.id,
+        userId: currentUser.id,
+        userName: currentUser.name
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        action: 'leave'
+      }));
+    }
   }, [activeRoom?.id, currentUser?.id]);
 
   // Track current user's specific seat status to prevent unnecessary microphone restarts when other users move
@@ -3197,6 +3289,8 @@ export default function App() {
                                 level: 1
                               };
 
+                              const isUnread = latestMsg.receiverId === currentUser?.id && !latestMsg.isRead;
+
                               return (
                                 <div
                                   key={otherUserId}
@@ -3212,16 +3306,32 @@ export default function App() {
 
                                   <div className="flex items-center gap-2.5">
                                     <div className="text-right font-sans">
-                                      <h4 className="text-xs font-black text-[#4A3E3D]">{otherUser.name}</h4>
+                                      <h4 className={`text-xs font-black ${isUnread ? 'text-red-500' : 'text-[#4A3E3D]'}`}>{otherUser.name}</h4>
                                       <p className="text-[10px] text-slate-500 truncate w-48 mt-0.5">
-                                        {latestMsg.isEncrypted ? '🔐 [رسالة مشفرة بنظام E2EE]' : latestMsg.text}
+                                        {latestMsg.isEncrypted ? (
+                                          <span className="flex items-center justify-end gap-1">
+                                            <span>🔐</span>
+                                            <EncryptedMessageText
+                                              ciphertext={latestMsg.rawCiphertext || latestMsg.text}
+                                              iv={latestMsg.iv || ''}
+                                              derivedKey={privateKey}
+                                              showCiphertext={false}
+                                              fallbackText="رسالة آمنة"
+                                            />
+                                          </span>
+                                        ) : latestMsg.text}
                                       </p>
                                     </div>
-                                    <img
-                                      src={otherUser.avatar}
-                                      alt=""
-                                      className="w-10 h-10 rounded-full object-cover border border-purple-500/20"
-                                    />
+                                    <div className="relative">
+                                      <img
+                                        src={otherUser.avatar}
+                                        alt=""
+                                        className="w-10 h-10 rounded-full object-cover border border-purple-500/20"
+                                      />
+                                      {isUnread && (
+                                        <span className="absolute -top-0.5 -right-0.5 bg-red-500 w-2.5 h-2.5 rounded-full border border-white animate-pulse"></span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -3471,9 +3581,15 @@ export default function App() {
                       } cursor-pointer`}
                     >
                       {/* Red unread messages badge */}
-                      <span className="absolute top-2 right-3 bg-red-500 text-white font-extrabold text-[7px] w-3.5 h-3.5 rounded-full flex items-center justify-center border border-white">
-                        1
-                      </span>
+                      {(() => {
+                        const count = privateMessages.filter(msg => msg.receiverId === currentUser?.id && !msg.isRead).length;
+                        if (count === 0) return null;
+                        return (
+                          <span className="absolute top-2 right-3 bg-red-500 text-white font-extrabold text-[7px] w-3.5 h-3.5 rounded-full flex items-center justify-center border border-white">
+                            {count}
+                          </span>
+                        );
+                      })()}
                       <span className="text-xl leading-none">✉️</span>
                       <span className="text-[9px] mt-1 leading-none">الرسائل</span>
                     </button>
@@ -5976,7 +6092,7 @@ export default function App() {
                                     <EncryptedMessageText
                                       ciphertext={msg.rawCiphertext || msg.text}
                                       iv={msg.iv || ''}
-                                      derivedKey={derivedKey}
+                                      derivedKey={privateKey}
                                       showCiphertext={false}
                                       fallbackText="🔒 رسالة آمنة"
                                     />
