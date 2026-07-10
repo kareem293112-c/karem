@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import AgoraRTC, { ILocalAudioTrack, IRemoteAudioTrack, IAgoraRTCClient } from 'agora-rtc-sdk-ng';
 import {
   Smartphone,
   Search,
@@ -291,40 +292,33 @@ export default function App() {
   };
 
   // Agora RTC Real-Time Communication Engine States
-  const [agoraStatus, setAgoraStatus] = useState<{
-    isInitialized: boolean;
-    role: 'ClientRoleAudience' | 'ClientRoleBroadcaster';
-    isLocalAudioPlaying: boolean;
-    isMuted: boolean;
-    appId: string | null;
-    token: string | null;
-    roomId: string | null;
-    logs: string[];
-    latency: number;
-  }>({
-    isInitialized: false,
-    role: 'ClientRoleAudience',
-    isLocalAudioPlaying: false,
-    isMuted: false,
-    appId: null,
-    token: null,
-    roomId: null,
-    logs: [],
-    latency: 18,
-  });
+  const [agoraClient, setAgoraClient] = useState<IAgoraRTCClient | null>(null);
+  const [localAudioTrack, setLocalAudioTrack] = useState<ILocalAudioTrack | null>(null);
+  const [agoraLogs, setAgoraLogs] = useState<string[]>([]);
+  const [agoraRole, setAgoraRole] = useState<'ClientRoleAudience' | 'ClientRoleBroadcaster'>('ClientRoleAudience');
+  const [isMuted, setIsMuted] = useState(false);
 
   const addAgoraLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setAgoraStatus(prev => ({
-      ...prev,
-      logs: [`[${timestamp}] ${msg}`, ...prev.logs.slice(0, 29)]
-    }));
+    setAgoraLogs(prev => [`[${timestamp}] ${msg}`, ...prev.slice(0, 29)]);
   };
 
   const initAgora = async (roomId: string) => {
     if (!currentUser) return;
+    
+    // Create client
+    const client = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
+    setAgoraClient(client);
+    
+    // Remote track listener
+    client.on("user-published", async (user, mediaType) => {
+      await client.subscribe(user, mediaType);
+      if (mediaType === "audio") {
+        user.audioTrack?.play();
+      }
+    });
+
     addAgoraLog(`جاري تهيئة محرك Agora RTC للغرفة الصوتية: ${roomId}`);
-    addAgoraLog(`AgoraRTC.createClient({ mode: "live", codec: "vp8" })`);
     
     try {
       const response = await fetch('/api/auth/agora-token', {
@@ -335,22 +329,8 @@ export default function App() {
       
       if (response.ok) {
         const data = await response.json();
-        const shortToken = data.token ? `${data.token.substring(0, 20)}...` : 'N/A';
-        addAgoraLog(`تم استدعاء API بنجاح لتوليد الـ RTC Token.`);
-        addAgoraLog(`التوكن المستلم: ${shortToken}`);
-        addAgoraLog(`الاتصال بقناة Agora: client.join("${data.appId}", "${roomId}", "${data.token}", ${data.uid})`);
-        addAgoraLog(`تحديد دور العضو كـ مستمع: client.setClientRole("ClientRoleAudience") (قراءة الصوت فقط دون فتح اللاقط)`);
-        
-        setAgoraStatus(prev => ({
-          ...prev,
-          isInitialized: true,
-          role: 'ClientRoleAudience',
-          isLocalAudioPlaying: false,
-          isMuted: false,
-          appId: data.appId,
-          token: data.token,
-          roomId: roomId,
-        }));
+        await client.join(data.appId, roomId, data.token, data.uid);
+        addAgoraLog(`تم الانضمام للقناة: ${roomId}`);
       } else {
         throw new Error('فشل جلب توكن Agora من السيرفر');
       }
@@ -359,19 +339,19 @@ export default function App() {
     }
   };
 
-  const stopAgora = () => {
+  const stopAgora = async () => {
     addAgoraLog(`إغلاق اتصال Agora ومغادرة القناة الصوتية.`);
-    addAgoraLog(`client.leave() & localAudioTrack.close()`);
-    setAgoraStatus(prev => ({
-      ...prev,
-      isInitialized: false,
-      role: 'ClientRoleAudience',
-      isLocalAudioPlaying: false,
-      isMuted: false,
-      appId: null,
-      token: null,
-      roomId: null,
-    }));
+    if (localAudioTrack) {
+      localAudioTrack.stop();
+      localAudioTrack.close();
+      setLocalAudioTrack(null);
+    }
+    if (agoraClient) {
+      await agoraClient.leave();
+      setAgoraClient(null);
+    }
+    setAgoraRole('ClientRoleAudience');
+    setIsMuted(false);
   };
 
 
@@ -839,112 +819,50 @@ export default function App() {
 
   // Microphone capture and streaming over WebSocket with Tencent TRTC GCC-Optimized Warm Standby
   const startVoiceCapture = async () => {
+    if (!agoraClient) return;
+    
+    // Ensure we are connected before trying to publish
+    if (agoraClient.connectionState !== "CONNECTED") {
+      addAgoraLog(`[Agora RTC] لا يمكن بث الصوت حالياً: غير متصل بالخادم.`);
+      return;
+    }
+
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        console.warn("Microphone API is not supported in this browser.");
-        return;
-      }
+      // Set role to host to allow publishing
+      await agoraClient.setClientRole("host");
+      setAgoraRole("ClientRoleBroadcaster");
       
-      isVoiceCaptureActiveRef.current = true;
+      const track = await AgoraRTC.createMicrophoneAudioTrack();
+      setLocalAudioTrack(track);
+      await agoraClient.publish([track]);
       
-      // If we already have a warm standby stream and audio context, just reactivate it!
-      if (mediaStreamRef.current && audioContextRef.current && isMicWarmStandbyRef.current) {
-        console.log("Re-activating TRTC Warm Standby Audio Track instantly!");
-        mediaStreamRef.current.getTracks().forEach(track => {
-          track.enabled = true;
-        });
-        isMicWarmStandbyRef.current = false;
-        
-        // Log Tencent TRTC transitions
-        addAgoraLog(`[TRTC Cloud] switchRole(TRTCRoleAnchor) - صعود المقعد نشط`);
-        addAgoraLog(`[TRTC Cloud] setAudioQuality(TRTCAudioQualityDefault) - تفعيل بث الباقة الصوتية`);
-        return;
-      }
-      
-      // Fully initialize if not present or closed
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-      
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioContextClass();
-      audioContextRef.current = audioContext;
-      
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(2048, 1, 1);
-      processorRef.current = processor;
-      
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      
-      processor.onaudioprocess = (e) => {
-        // If capture is temporarily deactivated/muted (warm standby), do not send data!
-        if (!isVoiceCaptureActiveRef.current || isMicWarmStandbyRef.current) {
-          return;
-        }
-        
-        const inputData = e.inputBuffer.getChannelData(0);
-        
-        // 1. Downsample audio on-the-fly to 16000Hz (crystal clear for voice, 3x bandwidth reduction)
-        const targetRate = 16000;
-        const downsampled = resampleAudio(inputData, audioContext.sampleRate, targetRate);
-        
-        // 2. Reduce decimal precision to 3 decimal places (saves up to 70% additional JSON payload size!)
-        const pcmData = Array.from(downsampled).map(v => Math.round(v * 1000) / 1000);
-        
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            action: 'audio_chunk',
-            roomId: activeRoom?.id,
-            userId: currentUser?.id,
-            userName: currentUser?.name,
-            sampleRate: targetRate,
-            audioData: pcmData
-          }));
-        }
-      };
-      
-      console.log("Real-time voice stream active with 16kHz downsampling & optimization!");
-      
-      addAgoraLog(`[TRTC Cloud] enterRoom(RoomID: ${activeRoom?.id}) - Scene: TRTCAppSceneVoiceChatRoom (وضع غرف الدردشة الصوتية التفاعلية)`);
-      addAgoraLog(`[TRTC Cloud] setAudioQuality(TRTCAudioQualityDefault) - جودة صوت تفاعلية فائقة السرعة`);
-      addAgoraLog(`[TRTC Cloud] setSystemVolumeType(TRTCSystemVolumeTypeAuto) - تحكم صوتي تلقائي ذكي`);
-      addAgoraLog(`[TRTC Cloud] enableAudioVolumeEvaluation(200) - تفعيل المراقبة الفورية لطبقات الصوت`);
+      addAgoraLog(`[Agora RTC] تم تفعيل الميكروفون ونشر الصوت بنجاح.`);
     } catch (err) {
-      console.error("Failed to capture microphone voice stream:", err);
+      console.error("Failed to capture microphone voice stream with Agora:", err);
     }
   };
 
-  const stopVoiceCapture = (fullyReleaseHardware = false) => {
-    isVoiceCaptureActiveRef.current = false;
-    
-    if (fullyReleaseHardware) {
-      console.log("Fully releasing microphone hardware session...");
-      isMicWarmStandbyRef.current = false;
-      if (processorRef.current) {
-        processorRef.current.disconnect();
-        processorRef.current = null;
-      }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-        mediaStreamRef.current = null;
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {});
-        audioContextRef.current = null;
-      }
-      addAgoraLog(`[TRTC Cloud] exitRoom() - إغلاق محرك الصوت بالكامل وتفريغ الذاكرة`);
-    } else {
-      // Warm Standby Mode - Keep AudioContext & Stream active but mute tracks and skip processing!
-      console.log("TRTC Mute/Downseat: Putting audio track in warm standby to prevent Audio Freeze!");
-      isMicWarmStandbyRef.current = true;
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => {
-          track.enabled = false; // Prevents capture overhead & permission recycle
-        });
-      }
-      
-      addAgoraLog(`[TRTC Cloud] switchRole(TRTCRoleAudience) - النزول للمستمعين (تحويل الدور السحابي فقط دون إغلاق المايك)`);
+  const stopVoiceCapture = async (fullyReleaseHardware: boolean = false) => {
+    if (localAudioTrack) {
+        localAudioTrack.stop();
+        localAudioTrack.close();
+        setLocalAudioTrack(null);
     }
+    
+    // If fully releasing, we can unpublish and potentially set role to audience
+    if (fullyReleaseHardware) {
+        if (agoraClient && agoraClient.connectionState === "CONNECTED") {
+            try {
+                await agoraClient.unpublish();
+            } catch(e) {
+                console.error("Error unpublishing:", e);
+            }
+            await agoraClient.setClientRole("audience");
+            setAgoraRole("ClientRoleAudience");
+        }
+    }
+    
+    addAgoraLog(`[Agora RTC] تم إيقاف الميكروفون ${fullyReleaseHardware ? '(إصدار كامل)' : '(وضع الاستعداد)'}.`);
   };
 
   // Refs to avoid stale closures in WebSocket event handlers
@@ -1159,8 +1077,8 @@ export default function App() {
 
   // Agora RTC Synchronization with Seat changes (Broadcaster / Audience role switching & mute)
   useEffect(() => {
-    if (currentScreen !== 'room' || !activeRoom || !currentUser || !agoraStatus.isInitialized) {
-      if (agoraStatus.isInitialized && currentScreen !== 'room') {
+    if (currentScreen !== 'room' || !activeRoom || !currentUser || !agoraClient) {
+      if (agoraClient && currentScreen !== 'room') {
         stopAgora();
       }
       return;
@@ -1170,45 +1088,34 @@ export default function App() {
 
     if (mySeat) {
       // User is on a seat -> ClientRoleBroadcaster role
-      if (agoraStatus.role !== 'ClientRoleBroadcaster') {
+      if (agoraRole !== 'ClientRoleBroadcaster') {
         addAgoraLog(`تحديث المقعد: تم كشف صعودك للمقعد رقم ${mySeat.index + 1}`);
         addAgoraLog(`تغيير الدور إلى متحدث: client.setClientRole("ClientRoleBroadcaster")`);
         addAgoraLog(`تفعيل المايك وبدء بث المسار الصوتي: localAudioTrack.setEnabled(true) & enableAudio()`);
         
-        setAgoraStatus(prev => ({
-          ...prev,
-          role: 'ClientRoleBroadcaster',
-          isLocalAudioPlaying: true,
-          isMuted: mySeat.isMuted
-        }));
+        setAgoraRole('ClientRoleBroadcaster');
+        setIsMuted(mySeat.isMuted);
       } else {
         // Already Broadcaster, check mute state change
-        if (agoraStatus.isMuted !== mySeat.isMuted) {
+        if (isMuted !== mySeat.isMuted) {
           addAgoraLog(`تحديث إداري: تم ${mySeat.isMuted ? 'كتم (Mute)' : 'إلغاء كتم'} صوتك من قبل مالك المجلس.`);
           addAgoraLog(`تطبيق كتم المايك: client.muteLocalAudioStream(${mySeat.isMuted})`);
           
-          setAgoraStatus(prev => ({
-            ...prev,
-            isMuted: mySeat.isMuted
-          }));
+          setIsMuted(mySeat.isMuted);
         }
       }
     } else {
       // User is not on a seat -> ClientRoleAudience role
-      if (agoraStatus.role !== 'ClientRoleAudience') {
+      if (agoraRole !== 'ClientRoleAudience') {
         addAgoraLog(`تحديث المقعد: تم كشف نزولك من المقاعد الصوتية.`);
         addAgoraLog(`إيقاف بث المايك والمسار الصوتي: localAudioTrack.setEnabled(false)`);
         addAgoraLog(`إرجاع الدور إلى مستمع: client.setClientRole("ClientRoleAudience")`);
         
-        setAgoraStatus(prev => ({
-          ...prev,
-          role: 'ClientRoleAudience',
-          isLocalAudioPlaying: false,
-          isMuted: false
-        }));
+        setAgoraRole('ClientRoleAudience');
+        setIsMuted(false);
       }
     }
-  }, [currentScreen, activeRoom?.id, currentUser?.id, agoraStatus.isInitialized, myCurrentSeatIndex, myCurrentSeatMuted]);
+  }, [currentScreen, activeRoom?.id, currentUser?.id, !!agoraClient, myCurrentSeatIndex, myCurrentSeatMuted]);
 
   // Relocated states to the top of the App component to prevent block-scoped reference errors.
 
@@ -5189,12 +5096,12 @@ export default function App() {
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-[10px] text-slate-400">اسم الغرفة السحابية (Room ID):</span>
-                          <span className="text-[10px] text-blue-300 font-mono font-bold">{agoraStatus.roomId || "N/A"}</span>
+                          <span className="text-[10px] text-blue-300 font-mono font-bold">{activeRoom?.id || "N/A"}</span>
                         </div>
                         <div className="flex justify-between items-center">
                           <span className="text-[10px] text-slate-400">صلاحية المستخدم الحالية (Role):</span>
                           <span className="text-[10px] text-amber-400 font-bold">
-                            {agoraStatus.role === 'ClientRoleBroadcaster' ? '🎙️ مذيع مع بث نشط (TRTCRoleAnchor)' : '🎧 مستمع صامت (TRTCRoleAudience)'}
+                            {agoraRole === 'ClientRoleBroadcaster' ? '🎙️ مذيع مع بث نشط (TRTCRoleAnchor)' : '🎧 مستمع صامت (TRTCRoleAudience)'}
                           </span>
                         </div>
                       </div>
@@ -5215,10 +5122,10 @@ export default function App() {
                       <div className="mb-3">
                         <span className="text-[9px] text-slate-400 block mb-1">سجل استدعاءات Tencent TRTC SDK الحية ومؤشرات الصوت:</span>
                         <div className="bg-black/80 rounded-xl p-2.5 border border-purple-950/60 h-28 overflow-y-auto font-mono text-[9.5px] space-y-1 scrollbar-thin scrollbar-thumb-purple-900 select-all" dir="ltr">
-                          {agoraStatus.logs.length === 0 ? (
+                          {agoraLogs.length === 0 ? (
                             <p className="text-slate-600 italic text-center pt-8">لا يوجد استدعاءات نشطة حالياً</p>
                           ) : (
-                            agoraStatus.logs.map((log, index) => (
+                            agoraLogs.map((log, index) => (
                               <p key={index} className="text-cyan-400 text-left leading-normal border-b border-white/5 pb-0.5">
                                 {log}
                               </p>
