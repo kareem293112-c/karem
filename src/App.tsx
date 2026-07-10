@@ -141,10 +141,44 @@ const EncryptedMessageText = ({
   return <span className="text-emerald-400 font-bold text-[9px]">{decryptedText}</span>;
 };
 
+const padSeats = (seats: VoiceSeat[] | undefined | null): VoiceSeat[] => {
+  const s = seats || [];
+  const hasIndexTen = s.some(item => item.index === 10);
+  const hasIndexZero = s.some(item => item.index === 0);
+  const isOneBased = hasIndexTen || !hasIndexZero;
+
+  return Array.from({ length: 10 }, (_, idx) => {
+    const targetIndex = isOneBased ? idx + 1 : idx;
+    const matched = s.find(item => item.index === targetIndex);
+    if (matched) {
+      return {
+        ...matched,
+        index: idx + 1
+      };
+    }
+    return {
+      index: idx + 1,
+      userId: null,
+      isMuted: false,
+      isLocked: false
+    };
+  });
+};
+
 export default function App() {
   // Global States representing Database
   const [users, setUsers] = useState<AppUser[]>(SIMULATED_USERS);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+
+  const checkIfOwner = (room: VoiceRoom | null) => {
+    if (!room || !currentUser) return false;
+    return !!(
+      (room.owner_id && room.owner_id === currentUser.id) ||
+      (room.owner_id && room.owner_id === currentUser.name) ||
+      (room.hostName && room.hostName === currentUser.name) ||
+      (currentUser.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (room.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || room.hostName?.includes("ABDULKERIM") || room.name === "حلبي" || room.name === "ؤ"))
+    );
+  };
   const [rooms, setRooms] = useState<VoiceRoom[]>(INITIAL_ROOMS);
   const [activeRoom, setActiveRoom] = useState<VoiceRoom | null>(null);
   const [transactions, setTransactions] = useState<AgentTransferLog[]>(INITIAL_TRANSACTIONS);
@@ -194,6 +228,7 @@ export default function App() {
   const [selectedSeatIndex, setSelectedSeatIndex] = useState<number | null>(null);
   const [floatingGifts, setFloatingGifts] = useState<{ id: number; icon: string; x: number; y: number }[]>([]);
   const [vipEntrance, setVipEntrance] = useState<{ active: boolean; userName: string; level: number } | null>(null);
+  const [activeRoomUsers, setActiveRoomUsers] = useState<Array<{ id: string; name: string; avatar: string }>>([]);
   const floatingIdCounter = useRef(0);
 
   // Agent Dashboard states
@@ -370,9 +405,13 @@ export default function App() {
         const ct = roomsRes.headers.get('content-type');
         if (ct && ct.includes('application/json')) {
           const roomsData = await roomsRes.json();
-          setRooms(roomsData);
+          const sanitizedRooms = (roomsData || []).map((r: any) => ({
+            ...r,
+            seats: padSeats(r.seats)
+          }));
+          setRooms(sanitizedRooms);
           if (activeRoom) {
-            const matchedRoom = roomsData.find((r: any) => r.id === activeRoom.id);
+            const matchedRoom = sanitizedRooms.find((r: any) => r.id === activeRoom.id);
             if (matchedRoom) {
               setActiveRoom(matchedRoom);
             }
@@ -770,8 +809,26 @@ export default function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'seats_changed') {
-          setActiveRoom(prev => prev ? { ...prev, seats: data.seats } : null);
-          setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, seats: data.seats } : r));
+          const padded = padSeats(data.seats);
+          setActiveRoom(prev => prev ? { ...prev, seats: padded } : null);
+          setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, seats: padded } : r));
+        }
+
+        else if (data.type === 'room_details_changed') {
+          setActiveRoom(prev => prev && prev.id === data.roomId ? { 
+            ...prev, 
+            name: data.name, 
+            hostAvatar: data.hostAvatar 
+          } : prev);
+          setRooms(prev => prev.map(r => r.id === data.roomId ? { 
+            ...r, 
+            name: data.name, 
+            hostAvatar: data.hostAvatar 
+          } : r));
+        }
+
+        else if (data.type === 'room_users_changed') {
+          setActiveRoomUsers(data.users || []);
         }
 
         else if (data.type === 'new_chat_message') {
@@ -1059,6 +1116,62 @@ export default function App() {
     return () => clearInterval(volInterval);
   }, []);
 
+  // Room Settings Drawer states
+  const [isRoomSettingsDrawerOpen, setIsRoomSettingsDrawerOpen] = useState(false);
+  const [roomSettingsName, setRoomSettingsName] = useState('');
+  const [roomSettingsAvatar, setRoomSettingsAvatar] = useState('');
+  const [isUpdatingRoomSettings, setIsUpdatingRoomSettings] = useState(false);
+  const [roomSettingsError, setRoomSettingsError] = useState('');
+
+  const handleRoomAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setRoomSettingsError('يرجى اختيار ملف صورة صالح.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 200;
+        const MAX_HEIGHT = 200;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+          setRoomSettingsAvatar(compressedBase64);
+        } else {
+          setRoomSettingsAvatar(event.target?.result as string);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    // Reset file input value to allow selecting same file/refreshing state
+    e.target.value = '';
+  };
+
   // Native Mobile UI States (Agora RTC status, Bottom sheet draw lists)
   const [isGiftDrawerOpen, setIsGiftDrawerOpen] = useState(false);
   const [isAgoraDrawerOpen, setIsAgoraDrawerOpen] = useState(false);
@@ -1323,7 +1436,17 @@ export default function App() {
   };
 
   const loadActiveRoom = (room: VoiceRoom) => {
-    setActiveRoom(room);
+    const sanitizedRoom = {
+      ...room,
+      seats: padSeats(room.seats)
+    };
+    setActiveRoom(sanitizedRoom);
+    if (currentUser) {
+      setActiveRoomUsers([{ id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar }]);
+    }
+    setRoomMessages([
+      { sender: 'نظام المجلس', text: 'مرحباً بكم في صدى العرب! يرجى الالتزام بالاحترام المتبادل داخل مجالسنا الموقرة.', color: 'text-purple-400 font-bold', type: 'system' }
+    ]);
     setCurrentScreen('room');
     initAgora(room.id); // Initialize Agora RTC connection
     // Trigger entrance animation for high-level user
@@ -1348,14 +1471,24 @@ export default function App() {
   const handleSeatClick = (seatIndex: number) => {
     if (!activeRoom || !currentUser) return;
     const seat = activeRoom.seats[seatIndex];
+    const isAuthorizedHost = checkIfOwner(activeRoom) || (activeRoom.seats[0] && activeRoom.seats[0].userId === currentUser.id);
 
-    // If seat is occupied, let host manage it, or let occupant leave
+    // If seat is occupied, let host manage it, or let occupant manage their own seat
     if (seat.userId) {
-      setSelectedSeatIndex(seatIndex);
+      if (seat.userId === currentUser.id || isAuthorizedHost) {
+        setSelectedSeatIndex(seatIndex);
+      } else {
+        // Show occupant's profile modal instead of showing host controls
+        const occupant = users.find(u => u.id === seat.userId);
+        if (occupant) {
+          setSelectedProfileUser(occupant);
+          setIsProfileModalOpen(true);
+        }
+      }
     } else {
       // Empty seat: If locked, only host can unlock. If open, current user can sit down!
       if (seat.isLocked) {
-        if (currentUser.id === activeRoom.seats[0].userId) {
+        if (isAuthorizedHost) {
           // Host clicks locked seat -> open sheet to unlock
           setSelectedSeatIndex(seatIndex);
         } else {
@@ -1364,11 +1497,11 @@ export default function App() {
       } else {
         // Sit down!
         // First, stand up from any other guest seat they might be on
-        const updatedSeats = activeRoom.seats.map((s) => {
+        const updatedSeats = activeRoom.seats.map((s, idx) => {
           if (s.userId === currentUser.id) {
             return { ...s, userId: null }; // Stand up
           }
-          if (s.index === seatIndex) {
+          if (idx === seatIndex) {
             return { ...s, userId: currentUser.id }; // Sit down
           }
           return s;
@@ -1395,6 +1528,14 @@ export default function App() {
     if (!activeRoom || selectedSeatIndex === null || !currentUser) return;
 
     const seat = activeRoom.seats[selectedSeatIndex];
+    const isAuthorizedHost = checkIfOwner(activeRoom) || (activeRoom.seats[0] && activeRoom.seats[0].userId === currentUser.id);
+
+    // Safeguard: only owner/host can mute, lock, or kick others
+    if ((action === 'mute' || action === 'lock' || action === 'kick') && !isAuthorizedHost) {
+      alert("عذراً، هذه الصلاحية مخصصة لصاحب المجلس فقط!");
+      return;
+    }
+
     let updatedSeats = [...activeRoom.seats];
 
     if (action === 'mute') {
@@ -2285,7 +2426,13 @@ export default function App() {
                               ))}
                             </div>
                           ) : (
-                            rooms.map((room) => (
+                            rooms.filter((room) => {
+                              const isMyOwnedRoom = (room.owner_id && currentUser?.id && room.owner_id === currentUser.id) ||
+                                                    (room.owner_id && currentUser?.name && room.owner_id === currentUser.name) ||
+                                                    (room.hostName && currentUser?.name && room.hostName === currentUser.name) ||
+                                                    (currentUser?.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (room.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || room.hostName?.includes("ABDULKERIM") || room.name === "حلبي" || room.name === "ؤ"));
+                              return isMyOwnedRoom;
+                            }).map((room) => (
                               <div
                                 key={room.id}
                                 onClick={() => handleEnterRoom(room)}
@@ -2338,14 +2485,19 @@ export default function App() {
                         {/* Floating Golden Microphone Create Room button */}
                         <div className="fixed bottom-20 left-4 z-40">
                           {(() => {
-                            const myRoom = rooms.find(r => r.owner_id === currentUser?.id);
+                            const myRoom = rooms.find(r => 
+                              (r.owner_id && currentUser?.id && r.owner_id === currentUser.id) ||
+                              (r.owner_id && currentUser?.name && r.owner_id === currentUser.name) ||
+                              (r.hostName && currentUser?.name && r.hostName === currentUser.name) ||
+                              (currentUser?.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (r.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || r.hostName?.includes("ABDULKERIM") || r.name === "حلبي" || r.name === "ؤ"))
+                            );
                             if (myRoom) {
                               return (
                                 <button
-                                  onClick={() => setActiveRoom(myRoom)}
-                                  className="bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-600 hover:to-teal-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
+                                  onClick={() => handleEnterRoom(myRoom)}
+                                  className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
                                 >
-                                  <span>🎙️ دخول مجلسي</span>
+                                  <span>🎙️ الدخول للغرفة</span>
                                 </button>
                               );
                             } else {
@@ -2360,7 +2512,7 @@ export default function App() {
                                   }}
                                   className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-white font-black text-xs p-3.5 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 active:scale-95 transition-all cursor-pointer border-2 border-white"
                                 >
-                                  <span>🎙️ إنشاء مجلس</span>
+                                  <span>🎙️ إنشاء روم</span>
                                 </button>
                               );
                             }
@@ -3330,8 +3482,8 @@ export default function App() {
                       <div className="bg-white border border-[#E8DCC4] p-5 rounded-3xl w-full max-w-xs text-right space-y-4 shadow-2xl animate-scale-up">
                         <div className="text-center border-b border-slate-100 pb-3">
                           <span className="text-3xl block mb-1 animate-pulse">🎙️</span>
-                          <h4 className="text-sm font-black text-[#4A3E3D]">إنشاء مجلس صوتي جديد</h4>
-                          <p className="text-[10px] text-slate-500 mt-1">ابدأ مجلسك الآن واستضف أصدقائك للدردشة الصوتية</p>
+                          <h4 className="text-sm font-black text-[#4A3E3D]">إنشاء روم صوتي جديد</h4>
+                          <p className="text-[10px] text-slate-500 mt-1">ابدأ الروم الخاص بك الآن واستضيف أصدقائك للدردشة الصوتية</p>
                         </div>
 
                         {newRoomError && (
@@ -3343,7 +3495,7 @@ export default function App() {
                         <div className="space-y-3.5">
                           {/* Room Name Input */}
                           <div className="space-y-1">
-                            <label className="text-[10px] text-slate-500 font-bold block">اسم المجلس</label>
+                            <label className="text-[10px] text-slate-500 font-bold block">اسم الروم</label>
                             <input
                               type="text"
                               placeholder="مثال: مجلس ديوانية العرب ☕"
@@ -3358,7 +3510,7 @@ export default function App() {
 
                           {/* Room Privacy Choice */}
                           <div className="space-y-1">
-                            <label className="text-[10px] text-slate-500 font-bold block">نوع المجلس</label>
+                            <label className="text-[10px] text-slate-500 font-bold block">نوع الروم</label>
                             <div className="grid grid-cols-2 gap-2 p-1 bg-[#FAF6EB] rounded-xl border border-[#DCD7C9]/40">
                               <button
                                 type="button"
@@ -3438,7 +3590,9 @@ export default function App() {
                                     room_name: newRoomNameInput.trim(),
                                     owner_id: currentUser?.id,
                                     is_private: newRoomIsPrivate,
-                                    password: newRoomPassword.trim()
+                                    password: newRoomPassword.trim(),
+                                    host_name: currentUser?.name || "مالك المجلس",
+                                    host_avatar: currentUser?.avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120"
                                   })
                                 });
 
@@ -3447,7 +3601,7 @@ export default function App() {
                                   alert(`🎉 تم إنشاء مجلسك الصوتي "${newRoomNameInput.trim()}" بنجاح!`);
                                   await fetchDbStates();
                                 } else {
-                                  setNewRoomError('فشل إنشاء المجلس، يرجى المحاولة مرة أخرى.');
+                                  setNewRoomError('فشل إنشاء الروم، يرجى المحاولة مرة أخرى.');
                                 }
                               } catch (e) {
                                 console.error(e);
@@ -3464,7 +3618,7 @@ export default function App() {
                                 <span>جاري الإنشاء...</span>
                               </>
                             ) : (
-                              <span>إنشاء المجلس ✨</span>
+                              <span>إنشاء الروم ✨</span>
                             )}
                           </button>
                         </div>
@@ -3773,60 +3927,89 @@ export default function App() {
                   {/* Room Top Header Nav Bar (Matching live mobile app style) */}
                   <div className="p-3 bg-transparent flex justify-between items-center select-none z-30" dir="rtl">
                     {/* Left side: Host Info Pill */}
-                    <div className="flex items-center gap-1.5 bg-black/40 backdrop-blur-md rounded-full pl-2.5 pr-1 py-1 border border-white/5">
-                      <div className="relative">
-                        <img
-                          src={activeRoom.hostAvatar}
-                          alt="host"
-                          className="w-7 h-7 rounded-full border border-purple-500/30 object-cover"
-                        />
-                        {/* Active status indicator */}
-                        <span className="absolute bottom-0 right-0 block h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#140b2e]" />
-                      </div>
-                      <div className="text-right">
-                        <h4 className="text-[10px] font-bold text-white max-w-[80px] truncate leading-tight">
-                          {activeRoom.name.replace(/☕|🎶|🔒/g, '').trim() || 'mason chat'}
-                        </h4>
-                        <span className="text-[8px] text-slate-300 block leading-none">مستوى {activeRoom.level}</span>
-                      </div>
-                      <button
-                        onClick={() => alert('تمت متابعة منشئ المجلس بنجاح! 🔔')}
-                        className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-[9px] px-2.5 py-0.5 rounded-full transition mr-1.5"
-                      >
-                        متابعة
-                      </button>
-                    </div>
+                    {(() => {
+                      const isOwner = activeRoom && (
+                        (activeRoom.owner_id && currentUser?.id && activeRoom.owner_id === currentUser.id) ||
+                        (activeRoom.owner_id && currentUser?.name && activeRoom.owner_id === currentUser.name) ||
+                        (activeRoom.hostName && currentUser?.name && activeRoom.hostName === currentUser.name) ||
+                        (currentUser?.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (activeRoom.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || activeRoom.hostName?.includes("ABDULKERIM") || activeRoom.name === "حلبي" || activeRoom.name === "ؤ"))
+                      );
+                      return (
+                        <div
+                          onClick={() => {
+                            if (isOwner) {
+                              setRoomSettingsName(activeRoom.name || '');
+                              setRoomSettingsAvatar(activeRoom.hostAvatar || '');
+                              setRoomSettingsError('');
+                              setIsRoomSettingsDrawerOpen(true);
+                            }
+                          }}
+                          className={`flex items-center gap-1.5 bg-black/40 backdrop-blur-md rounded-full pl-2.5 pr-1 py-1 border border-white/5 ${isOwner ? 'cursor-pointer hover:bg-black/60 active:scale-95 transition-all' : ''}`}
+                          title={isOwner ? "إعدادات المجلس" : ""}
+                        >
+                          <div className="relative">
+                            <img
+                              src={activeRoom.hostAvatar}
+                              alt="host"
+                              className="w-7 h-7 rounded-full border border-purple-500/30 object-cover select-none pointer-events-none"
+                              style={{ WebkitTouchCallout: 'none' }}
+                              draggable="false"
+                              onContextMenu={(e) => e.preventDefault()}
+                            />
+                            {/* Active status indicator */}
+                            <span className="absolute bottom-0 right-0 block h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#140b2e]" />
+                          </div>
+                          <div className="text-right">
+                            <h4 className="text-[10px] font-bold text-white max-w-[80px] truncate leading-tight">
+                              {activeRoom.name.replace(/☕|🎶|🔒/g, '').trim() || 'mason chat'}
+                            </h4>
+                            <span className="text-[8px] text-slate-300 block leading-none">مستوى {activeRoom.level}</span>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              alert('تمت متابعة منشئ المجلس بنجاح! 🔔');
+                            }}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-[9px] px-2.5 py-0.5 rounded-full transition mr-1.5"
+                          >
+                            متابعة
+                          </button>
+                        </div>
+                      );
+                    })()}
 
                     {/* Right side: Viewers and Exit */}
                     <div className="flex items-center gap-2">
                       {/* Overlapping viewer avatars */}
                       <div className="flex -space-x-1.5 space-x-reverse items-center">
-                        <img
-                          src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=60"
-                          alt="viewer"
-                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
-                        />
-                        <img
-                          src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=60"
-                          alt="viewer"
-                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
-                        />
-                        <img
-                          src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=60"
-                          alt="viewer"
-                          className="w-4.5 h-4.5 rounded-full border border-[#140b2e] object-cover"
-                        />
+                        {activeRoomUsers.slice(0, 3).map((user, idx) => (
+                          <img
+                            key={user.id || idx}
+                            src={user.avatar}
+                            alt={user.name}
+                            className="w-5 h-5 rounded-full border border-[#140b2e] object-cover"
+                            title={user.name}
+                          />
+                        ))}
                       </div>
 
                       {/* Viewer count */}
                       <div className="bg-black/30 backdrop-blur-md px-2 py-0.5 rounded-full text-[9px] text-slate-200 font-bold flex items-center gap-0.5">
-                        <span>{activeRoom.activeUsersCount + 210}</span>
+                        <span>{activeRoomUsers.length}</span>
                         <span className="text-slate-400 text-[8px] font-bold">&gt;</span>
                       </div>
 
                       {/* Close X Button */}
                       <button
                         onClick={() => {
+                          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                            wsRef.current.send(JSON.stringify({
+                              action: 'leave',
+                              roomId: activeRoom.id,
+                              userId: currentUser.id,
+                              userName: currentUser.name
+                            }));
+                          }
                           const cleanedSeats = activeRoom.seats.map(s => s.userId === currentUser.id ? { ...s, userId: null } : s);
                           const updatedRoom = { ...activeRoom, seats: cleanedSeats };
                           setRooms(rooms.map(r => r.id === activeRoom.id ? updatedRoom : r));
@@ -4027,7 +4210,7 @@ export default function App() {
                     </div>
 
                     {/* Live Arabic Council Chat Feed - Premium Floating Transparent Overlay (Exactly like the screenshot) */}
-                    <div className="absolute bottom-2 right-3 left-3 h-[135px] pointer-events-auto z-20 bg-black/50 backdrop-blur-md border border-white/5 rounded-2xl p-2.5 shadow-2xl flex flex-col justify-end overflow-hidden" dir="rtl">
+                    <div className="absolute bottom-2 right-3 left-3 h-[135px] pointer-events-auto z-20 bg-transparent flex flex-col justify-end overflow-hidden" dir="rtl">
                       <div 
                         ref={(el) => {
                           if (el) {
@@ -4273,56 +4456,67 @@ export default function App() {
                             إغلاق
                           </button>
                           <h4 className="text-xs font-bold text-white">
-                            إدارة المقعد رقم {selectedSeatIndex} (المستضيف)
+                            إدارة المقعد رقم {selectedSeatIndex + 1}
                           </h4>
                         </div>
-
+ 
                         <div className="space-y-2">
-                          {/* Mute Seat */}
-                          <button
-                            onClick={() => handleHostAction('mute')}
-                            className="w-full bg-[#03000a] hover:bg-slate-900 border border-slate-800 py-2 px-4 rounded-xl text-xs font-bold text-slate-200 flex justify-between items-center transition"
-                            id="host-action-mute"
-                          >
-                            <span className="text-purple-400">
-                              {activeRoom.seats[selectedSeatIndex].isMuted ? 'تفعيل الصوت' : 'كتم الميكروفون'}
-                            </span>
-                            <Volume2 className="w-4 h-4 text-purple-400" />
-                          </button>
-
-                          {/* Lock/Unlock Seat */}
-                          <button
-                            onClick={() => handleHostAction('lock')}
-                            className="w-full bg-[#03000a] hover:bg-slate-900 border border-slate-800 py-2 px-4 rounded-xl text-xs font-bold text-slate-200 flex justify-between items-center transition"
-                            id="host-action-lock"
-                          >
-                            <span className="text-amber-400">
-                              {activeRoom.seats[selectedSeatIndex].isLocked ? 'إلغاء قفل المقعد' : 'قفل المقعد وحجبه'}
-                            </span>
-                            {activeRoom.seats[selectedSeatIndex].isLocked ? <Unlock className="w-4 h-4 text-amber-400" /> : <Lock className="w-4 h-4 text-amber-400" />}
-                          </button>
-
-                          {/* Kick Occupant (only visible if seat is occupied) */}
-                          {activeRoom.seats[selectedSeatIndex].userId && (
-                            <button
-                              onClick={() => {
-                                if (activeRoom.seats[selectedSeatIndex].userId === currentUser.id) {
-                                  handleHostAction('leave');
-                                } else {
-                                  handleHostAction('kick');
-                                }
-                              }}
-                              className="w-full bg-red-950/40 hover:bg-red-900/40 border border-red-500/20 py-2 px-4 rounded-xl text-xs font-bold text-red-400 flex justify-between items-center transition"
-                              id="host-action-kick"
-                            >
-                              <span>
-                                {activeRoom.seats[selectedSeatIndex].userId === currentUser.id ? 'النزول من المقعد للجمهور' : 'طرد المستخدم للجمهور'}
-                              </span>
-                              <ShieldAlert className="w-4 h-4 text-red-400" />
-                            </button>
-                          )}
+                          {(() => {
+                            const isAuthorizedHost = checkIfOwner(activeRoom) || (activeRoom.seats[0] && activeRoom.seats[0].userId === currentUser.id);
+                            return (
+                              <>
+                                {isAuthorizedHost && (
+                                  <>
+                                    {/* Mute Seat */}
+                                    <button
+                                      onClick={() => handleHostAction('mute')}
+                                      className="w-full bg-[#03000a] hover:bg-slate-900 border border-slate-800 py-2 px-4 rounded-xl text-xs font-bold text-slate-200 flex justify-between items-center transition"
+                                      id="host-action-mute"
+                                    >
+                                      <span className="text-purple-400">
+                                        {activeRoom.seats[selectedSeatIndex].isMuted ? 'تفعيل الصوت' : 'كتم الميكروفون'}
+                                      </span>
+                                      <Volume2 className="w-4 h-4 text-purple-400" />
+                                    </button>
+ 
+                                    {/* Lock/Unlock Seat */}
+                                    <button
+                                      onClick={() => handleHostAction('lock')}
+                                      className="w-full bg-[#03000a] hover:bg-slate-900 border border-slate-800 py-2 px-4 rounded-xl text-xs font-bold text-slate-200 flex justify-between items-center transition"
+                                      id="host-action-lock"
+                                    >
+                                      <span className="text-amber-400">
+                                        {activeRoom.seats[selectedSeatIndex].isLocked ? 'إلغاء قفل المقعد' : 'قفل المقعد وحجبه'}
+                                      </span>
+                                      {activeRoom.seats[selectedSeatIndex].isLocked ? <Unlock className="w-4 h-4 text-amber-400" /> : <Lock className="w-4 h-4 text-amber-400" />}
+                                    </button>
+                                  </>
+                                )}
+ 
+                                {/* Kick Occupant (only visible if seat is occupied) */}
+                                {activeRoom.seats[selectedSeatIndex].userId && (
+                                  <button
+                                    onClick={() => {
+                                      if (activeRoom.seats[selectedSeatIndex].userId === currentUser.id) {
+                                        handleHostAction('leave');
+                                      } else {
+                                        handleHostAction('kick');
+                                      }
+                                    }}
+                                    className="w-full bg-red-950/40 hover:bg-red-900/40 border border-red-500/20 py-2 px-4 rounded-xl text-xs font-bold text-red-400 flex justify-between items-center transition"
+                                    id="host-action-kick"
+                                  >
+                                    <span>
+                                      {activeRoom.seats[selectedSeatIndex].userId === currentUser.id ? 'النزول من المقعد للجمهور' : 'طرد المستخدم للجمهور'}
+                                    </span>
+                                    <ShieldAlert className="w-4 h-4 text-red-400" />
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
-
+ 
                       </div>
                     </div>
                   )}
@@ -4350,16 +4544,16 @@ export default function App() {
                             {/* "All" candidate */}
                             <button
                               onClick={() => setSelectedRecipientSeatIndex('all')}
-                              className={`flex flex-col items-center gap-1 p-1.5 px-2.5 rounded-xl border shrink-0 transition-all cursor-pointer ${
+                              className={`flex flex-col items-center gap-1 p-1 px-2 rounded-xl border shrink-0 transition-all cursor-pointer ${
                                 selectedRecipientSeatIndex === 'all'
                                   ? 'bg-purple-900/40 border-amber-400 text-amber-300'
                                   : 'bg-[#03000a]/60 border-purple-900/20 text-slate-400 hover:text-white'
                               }`}
                             >
-                              <div className="w-8 h-8 rounded-full bg-purple-950/80 flex items-center justify-center text-sm border border-purple-500/20">
+                              <div className="w-6 h-6 rounded-full bg-purple-950/80 flex items-center justify-center text-xs border border-purple-500/20">
                                 👥
                               </div>
-                              <span className="text-[8px] font-bold">الجميع</span>
+                              <span className="text-[8px] font-bold font-sans">الجميع</span>
                             </button>
 
                             {/* Occupied seats candidates */}
@@ -4375,7 +4569,7 @@ export default function App() {
                                   <button
                                     key={seat.index}
                                     onClick={() => setSelectedRecipientSeatIndex(seat.index)}
-                                    className={`flex flex-col items-center gap-1 p-1.5 px-2.5 rounded-xl border shrink-0 transition-all cursor-pointer ${
+                                    className={`flex flex-col items-center gap-1 p-1 px-2 rounded-xl border shrink-0 transition-all cursor-pointer ${
                                       isSelected
                                         ? 'bg-purple-900/40 border-amber-400 text-amber-300'
                                         : 'bg-[#03000a]/60 border-purple-900/20 text-slate-400 hover:text-white'
@@ -4385,13 +4579,13 @@ export default function App() {
                                       <img
                                         src={occupant.avatar}
                                         alt={occupant.name}
-                                        className="w-8 h-8 rounded-full object-cover border border-purple-500/30"
+                                        className="w-6 h-6 rounded-full object-cover border border-purple-500/30"
                                       />
                                       {isHost && (
-                                        <span className="absolute -top-1.5 -right-1.5 text-[8px]">👑</span>
+                                        <span className="absolute -top-1 -right-1 text-[7px]">👑</span>
                                       )}
                                     </div>
-                                    <span className="text-[8px] font-bold max-w-[50px] truncate">
+                                    <span className="text-[8px] font-bold max-w-[50px] truncate font-sans">
                                       {isHost ? 'المستضيف' : occupant.name}
                                     </span>
                                   </button>
@@ -4798,6 +4992,140 @@ export default function App() {
                             بدء الفحص
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ROOM SETTINGS DRAWER */}
+                  {isRoomSettingsDrawerOpen && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[#0f0a1c] backdrop-blur-2xl border-t border-purple-500/45 rounded-t-[32px] p-5 z-50 animate-fade-in shadow-2xl text-right font-sans max-h-[85%] overflow-y-auto" dir="rtl">
+                      {/* Header */}
+                      <div className="flex justify-between items-center border-b border-purple-950/40 pb-3 mb-4">
+                        <button
+                          onClick={() => setIsRoomSettingsDrawerOpen(false)}
+                          className="text-xs text-slate-400 hover:text-white bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800 cursor-pointer transition"
+                        >
+                          إغلاق
+                        </button>
+                        <h4 className="text-sm font-black text-white flex items-center gap-1.5 font-sans">
+                          ⚙️ إعدادات المجلس الصوتي
+                        </h4>
+                      </div>
+
+                      {roomSettingsError && (
+                        <div className="bg-red-950/50 border border-red-500/30 text-red-300 p-2.5 rounded-xl text-xs mb-3 text-right">
+                          ⚠️ {roomSettingsError}
+                        </div>
+                      )}
+
+                      <div className="space-y-4">
+                        {/* Room Name Input */}
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-slate-300 block">اسم المجلس الصوتي:</label>
+                          <input
+                            type="text"
+                            value={roomSettingsName}
+                            onChange={(e) => setRoomSettingsName(e.target.value)}
+                            placeholder="اكتب اسم المجلس هنا..."
+                            className="w-full bg-[#05030a] border border-purple-900/40 text-white rounded-xl p-3 text-xs outline-none focus:border-purple-500 transition font-bold"
+                          />
+                        </div>
+
+                        {/* Mobile File Uploader */}
+                        <div className="space-y-3">
+                          <label className="text-xs font-bold text-slate-300 block">صورة واجهة المجلس 🖼️:</label>
+                          
+                          {/* Selected Image Preview */}
+                          {roomSettingsAvatar && (
+                            <div className="flex flex-col items-center justify-center p-3 bg-[#05030a]/40 rounded-2xl border border-purple-900/30 gap-2">
+                              <span className="text-[10px] text-slate-400 font-bold">معاينة الصورة الحالية:</span>
+                              <div className="relative w-24 h-24 rounded-2xl overflow-hidden border-2 border-amber-400/80 shadow-lg shadow-purple-950">
+                                <img
+                                  src={roomSettingsAvatar}
+                                  alt="Room Avatar Preview"
+                                  className="w-full h-full object-cover select-none pointer-events-none"
+                                  style={{ WebkitTouchCallout: 'none' }}
+                                  draggable="false"
+                                  onContextMenu={(e) => e.preventDefault()}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <input
+                            type="file"
+                            id="room-avatar-upload"
+                            accept="image/*"
+                            onChange={handleRoomAvatarFileChange}
+                            className="hidden"
+                          />
+                          
+                          <label
+                            htmlFor="room-avatar-upload"
+                            className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/35 hover:border-amber-400 bg-purple-950/20 hover:bg-purple-950/40 text-slate-200 hover:text-white rounded-2xl p-6 text-center cursor-pointer transition active:scale-95 group"
+                          >
+                            <span className="text-3xl mb-2 group-hover:scale-110 transition-transform">📱</span>
+                            <span className="text-xs font-black text-amber-300">رفع صورة من الاستوديو / الكاميرا</span>
+                            <span className="text-[9px] text-slate-400 mt-1">اضغط هنا لتصفح ملفات هاتفك واختيار صورة مباشرة</span>
+                          </label>
+                        </div>
+
+                        {/* Save Action Button */}
+                        <button
+                          type="button"
+                          disabled={isUpdatingRoomSettings}
+                          onClick={async () => {
+                            if (!roomSettingsName.trim()) {
+                              setRoomSettingsError('يرجى كتابة اسم المجلس أولاً');
+                              return;
+                            }
+
+                            setIsUpdatingRoomSettings(true);
+                            setRoomSettingsError('');
+
+                            try {
+                              const response = await fetch('/api/rooms/update', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  room_id: activeRoom.id,
+                                  room_name: roomSettingsName.trim(),
+                                  host_avatar: roomSettingsAvatar.trim()
+                                })
+                              });
+
+                              if (response.ok) {
+                                // Update activeRoom locally
+                                const updatedRoom = { 
+                                  ...activeRoom, 
+                                  name: roomSettingsName.trim(), 
+                                  hostAvatar: roomSettingsAvatar.trim() 
+                                };
+                                setActiveRoom(updatedRoom);
+                                // Also update the list of rooms
+                                setRooms(prev => prev.map(r => r.id === activeRoom.id ? updatedRoom : r));
+                                
+                                setIsRoomSettingsDrawerOpen(false);
+                                alert('🎉 تم تحديث بيانات مجلسك الصوتي بنجاح!');
+                                await fetchDbStates();
+                              } else {
+                                setRoomSettingsError('فشل تحديث الإعدادات، يرجى المحاولة مرة أخرى.');
+                              }
+                            } catch (err) {
+                              console.error(err);
+                              setRoomSettingsError('حدث خطأ في الاتصال بالخادم أثناء حفظ الإعدادات.');
+                            } finally {
+                              setIsUpdatingRoomSettings(false);
+                            }
+                          }}
+                          className="w-full bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-slate-950 py-3 rounded-xl text-xs font-black transition shadow-lg hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                        >
+                          {isUpdatingRoomSettings ? (
+                            <span>جاري الحفظ والتحديث...</span>
+                          ) : (
+                            <span>حفظ التعديلات ✨</span>
+                          )}
+                        </button>
                       </div>
                     </div>
                   )}

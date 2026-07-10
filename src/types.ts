@@ -69,6 +69,7 @@ export interface VoiceRoom {
   xp: number;
   activeUsersCount: number;
   seats: VoiceSeat[];
+  owner_id?: string;
 }
 
 export interface AgentTransferLog {

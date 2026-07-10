@@ -94,11 +94,86 @@ function broadcastToRoom(roomId: string, message: any, excludeClient?: CustomWeb
   }
 }
 
+// Broadcast room users list to everyone in the room
+function broadcastRoomUsers(roomId: string) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const db = getDb();
+  const activeUsers: Array<{ id: string; name: string; avatar: string }> = [];
+  for (const client of clients) {
+    if (client.userId && client.readyState === WebSocket.OPEN) {
+      const u = db.users.find(user => user.id === client.userId);
+      activeUsers.push({
+        id: client.userId,
+        name: client.userName || u?.name || 'مستشار صدى',
+        avatar: u?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${client.userId}`
+      });
+    }
+  }
+  // Remove duplicates by id
+  const uniqueUsers = Array.from(new Map(activeUsers.map(item => [item.id, item])).values());
+
+  broadcastToRoom(roomId, {
+    type: "room_users_changed",
+    users: uniqueUsers
+  });
+}
+
+// Helper to safely get a user off the mic when they leave or disconnect
+async function handleUserStandUpFromSeat(roomId: string, userId: string) {
+  if (!roomId || !userId) return;
+  const db = getDb();
+  const rIdx = db.rooms.findIndex(r => r.id === roomId);
+  if (rIdx !== -1) {
+    const room = db.rooms[rIdx];
+    let changed = false;
+    const updatedSeats = room.seats.map(seat => {
+      if (seat.userId === userId) {
+        changed = true;
+        return { ...seat, userId: null };
+      }
+      return seat;
+    });
+
+    if (changed) {
+      db.rooms[rIdx].seats = updatedSeats;
+      saveDb(db);
+
+      // Persist to Firestore if available
+      const fDb = getFirestoreDb();
+      if (fDb) {
+        try {
+          const roomRef = fDb.collection("voice_rooms").doc(roomId);
+          const batch = fDb.batch();
+          for (const seat of updatedSeats) {
+            const seatRef = roomRef.collection("mic_seats").doc(seat.index.toString());
+            batch.set(seatRef, {
+              seat_number: seat.index,
+              current_user_id: seat.userId || null,
+              is_locked: seat.isLocked || false,
+              is_muted: seat.isMuted || false
+            }, { merge: true });
+          }
+          await batch.commit();
+        } catch (e) {
+          console.error("Firestore batch standup seat update error:", e);
+        }
+      }
+
+      // Broadcast seat update to everyone in the room
+      broadcastToRoom(roomId, {
+        type: "seats_changed",
+        seats: updatedSeats
+      });
+    }
+  }
+}
+
 // WebSocket Connection Handler
 wss.on("connection", (ws: CustomWebSocket) => {
   console.log("جديد: متصل بالـ WebSocket");
 
-  ws.on("message", (messageBuffer) => {
+  ws.on("message", async (messageBuffer) => {
     try {
       const data = JSON.parse(messageBuffer.toString());
       const { action, roomId, userId, userName } = data;
@@ -130,9 +205,16 @@ wss.on("connection", (ws: CustomWebSocket) => {
           roomId,
           message: "تم الاتصال بالغرفة بنجاح وبث الصوت وتزامن المقاعد نشط!"
         }));
+
+        // Broadcast room users
+        broadcastRoomUsers(roomId);
       }
 
       else if (action === "leave") {
+        if (ws.roomId && ws.userId) {
+          await handleUserStandUpFromSeat(ws.roomId, ws.userId);
+        }
+        const savedRoomId = ws.roomId;
         if (ws.roomId && roomClients.has(ws.roomId)) {
           roomClients.get(ws.roomId)!.delete(ws);
           broadcastToRoom(ws.roomId, {
@@ -143,6 +225,9 @@ wss.on("connection", (ws: CustomWebSocket) => {
             timestamp: new Date().toISOString()
           });
         }
+        if (savedRoomId) {
+          broadcastRoomUsers(savedRoomId);
+        }
       }
 
       else if (action === "seats_update") {
@@ -152,13 +237,34 @@ wss.on("connection", (ws: CustomWebSocket) => {
         if (rIdx !== -1) {
           db.rooms[rIdx].seats = seats;
           saveDb(db);
-          
-          // Broadcast seat update to everyone else in the room
-          broadcastToRoom(roomId, {
-            type: "seats_changed",
-            seats
-          }, ws);
         }
+
+        // Persist to Firestore if available
+        const fDb = getFirestoreDb();
+        if (fDb) {
+          try {
+            const roomRef = fDb.collection("voice_rooms").doc(roomId);
+            const batch = fDb.batch();
+            for (const seat of seats) {
+              const seatRef = roomRef.collection("mic_seats").doc(seat.index.toString());
+              batch.set(seatRef, {
+                seat_number: seat.index,
+                current_user_id: seat.userId || null,
+                is_locked: seat.isLocked || false,
+                is_muted: seat.isMuted || false
+              }, { merge: true });
+            }
+            await batch.commit();
+          } catch (e) {
+            console.error("Firestore batch seat update error:", e);
+          }
+        }
+        
+        // Broadcast seat update to everyone else in the room
+        broadcastToRoom(roomId, {
+          type: "seats_changed",
+          seats
+        }, ws);
       }
 
       else if (action === "chat_message") {
@@ -241,7 +347,11 @@ wss.on("connection", (ws: CustomWebSocket) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", async () => {
+    if (ws.roomId && ws.userId) {
+      await handleUserStandUpFromSeat(ws.roomId, ws.userId);
+    }
+    const savedRoomId = ws.roomId;
     if (ws.roomId && roomClients.has(ws.roomId)) {
       roomClients.get(ws.roomId)!.delete(ws);
       broadcastToRoom(ws.roomId, {
@@ -251,6 +361,9 @@ wss.on("connection", (ws: CustomWebSocket) => {
         userName: ws.userName,
         timestamp: new Date().toISOString()
       });
+    }
+    if (savedRoomId) {
+      broadcastRoomUsers(savedRoomId);
     }
   });
 });
@@ -807,7 +920,7 @@ app.post("/api/agent/transfer", async (req, res) => {
 
 // ==================== NEW VOICE ROOM API ENDPOINTS ====================
 app.post("/api/rooms/create", async (req, res) => {
-  const { room_name, owner_id, is_private, password } = req.body;
+  const { room_name, owner_id, is_private, password, host_name, host_avatar } = req.body;
   const tencent_room_id = Math.floor(Math.random() * 1000000);
   
   const fDb = getFirestoreDb();
@@ -820,6 +933,10 @@ app.post("/api/rooms/create", async (req, res) => {
         is_private: !!is_private,
         room_password: password || "",
         max_seats: 8,
+        host_name: host_name || "مالك المجلس",
+        host_avatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+        hostName: host_name || "مالك المجلس",
+        hostAvatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
         created_at: FieldValue.serverTimestamp()
       });
       
@@ -852,20 +969,65 @@ app.post("/api/rooms/create", async (req, res) => {
   const newRoom: any = {
     id: newRoomId,
     name: room_name,
-    hostName: owner_id,
-    hostAvatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
+    hostName: host_name || owner_id || "مالك المجلس",
+    hostAvatar: host_avatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
     isPrivate: !!is_private,
     password: password || "",
     level: 1,
     xp: 0,
     activeUsersCount: 1,
     seats: seats,
-    tencent_room_id: tencent_room_id
+    tencent_room_id: tencent_room_id,
+    owner_id: owner_id
   };
   
   localDb.rooms.push(newRoom);
   saveDb(localDb);
   res.json({ room_id: newRoomId, tencent_room_id });
+});
+
+app.post("/api/rooms/update", async (req, res) => {
+  const { room_id, room_name, host_avatar } = req.body;
+  
+  // 1. Sync to local DB
+  const localDb = getDb();
+  const room = localDb.rooms.find(r => r.id === room_id);
+  if (room) {
+    room.name = room_name;
+    room.hostAvatar = host_avatar;
+    saveDb(localDb);
+  }
+
+  // 2. Sync to Firestore (if active)
+  const fDb = getFirestoreDb();
+  if (fDb) {
+    try {
+      const roomRef = fDb.collection("voice_rooms").doc(room_id);
+      await roomRef.update({
+        room_name: room_name,
+        host_avatar: host_avatar,
+        hostAvatar: host_avatar, // Keep both updated
+      });
+    } catch (error) {
+      console.error("Firestore error updating room settings:", error);
+    }
+  }
+
+  // 3. Broadcast real-time change to all connected WebSocket clients in the room
+  if (wss) {
+    wss.clients.forEach((client: any) => {
+      if (client.readyState === WebSocket.OPEN && client.roomId === room_id) {
+        client.send(JSON.stringify({
+          type: "room_details_changed",
+          roomId: room_id,
+          name: room_name,
+          hostAvatar: host_avatar
+        }));
+      }
+    });
+  }
+
+  res.json({ success: true });
 });
 
 app.post("/api/rooms/seats/take", async (req, res) => {
