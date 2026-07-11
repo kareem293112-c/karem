@@ -1756,9 +1756,11 @@ app.post("/api/auth/zego-token", (req, res) => {
     };
 
     const payload = JSON.stringify(payloadObject);
-    const effectiveTimeInSeconds = 3600 * 24; // 24 hours validity
+    const effectiveTimeInSeconds = 3600; // صلاحية ساعة كاملة لمنع فصل الصوت
 
+    console.log(`[ZEGO-SERVER] Generating token: appId=${appId}, userId=${userId}, room_id=${room_id}, secretLength=${secret.length}, effectiveTime=${effectiveTimeInSeconds}`);
     const token = generateZegoToken04(appId, userId, secret, effectiveTimeInSeconds, payload);
+    console.log(`[ZEGO-SERVER] Token generated successfully. Length: ${token.length}`);
 
     return res.json({
       success: true,
