@@ -866,14 +866,14 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
     const streamID = currentUser.id + "_stream";
-    if (myCurrentSeatIndex !== null && !myCurrentSeatMuted) {
+    if (isZegoLoggedIn && myCurrentSeatIndex !== null && !myCurrentSeatMuted) {
       console.log("[ZEGO] Reactive Auto-Publishing stream:", streamID);
       startPublishing(streamID);
     } else {
       console.log("[ZEGO] Reactive Auto-Stopping stream:", streamID);
       stopPublishing(streamID);
     }
-  }, [myCurrentSeatIndex, myCurrentSeatMuted, currentUser?.id]);
+  }, [myCurrentSeatIndex, myCurrentSeatMuted, currentUser?.id, isZegoLoggedIn]);
 
   // Voice capture effect
   useEffect(() => {
@@ -908,7 +908,10 @@ export default function App() {
                 { userID: currentUser.id, userName: currentUser.name },
                 { userUpdate: true }
               );
-              console.log("Zego room login success:", roomIdToJoin);
+              if (isMounted) {
+                console.log("Zego room login success:", roomIdToJoin);
+                setIsZegoLoggedIn(true);
+              }
             }
           }
         } catch (e) {
@@ -920,6 +923,7 @@ export default function App() {
 
     return () => {
       isMounted = false;
+      setIsZegoLoggedIn(false);
       if (roomIdToJoin) {
         console.log("Leaving Zego room:", roomIdToJoin);
         getZegoEngine().then(engine => {
@@ -986,6 +990,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState('');
   const [speakingSeatIndex, setSpeakingSeatIndex] = useState<number | null>(null);
   const [speakingVolume, setSpeakingVolume] = useState<number>(0);
+  const [isZegoLoggedIn, setIsZegoLoggedIn] = useState<boolean>(false);
   const [isRoomAudioDeafened, setIsRoomAudioDeafened] = useState(false);
 
   // Real-time microphone level capture for currentUser when they are unmuted on a seat

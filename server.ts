@@ -1730,13 +1730,19 @@ app.post("/api/auth/zego-token", (req, res) => {
     return res.status(400).json({ error: "معرف المستخدم (userId) مطلوب" });
   }
 
-  const appId = Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
-  // If appSign is missing, we use a 64-character dummy hex string so that token generation doesn't fail
-  const appSign = process.env.VITE_ZEGO_APP_SIGN || "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
-
-  let secret = appSign;
+  const appId = Number(process.env.ZEGO_APP_ID) || Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
+  
+  // Try server secret first, then fallback to App Sign (64-character hex string)
+  const rawSecret = process.env.ZEGO_SERVER_SECRET || process.env.ZEGO_APP_SIGN || process.env.VITE_ZEGO_APP_SIGN || "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+  let secret = rawSecret;
   if (secret.length === 64) {
     secret = Buffer.from(secret, 'hex').toString('binary');
+  } else if (secret.length !== 32) {
+    if (secret.length > 32) {
+      secret = secret.substring(0, 32);
+    } else {
+      secret = secret.padEnd(32, '0');
+    }
   }
 
   try {
@@ -1770,8 +1776,8 @@ app.post("/api/auth/zego-token", (req, res) => {
 
 // Zego Client Config Endpoint
 app.get("/api/auth/zego-config", (req, res) => {
-  const appId = Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
-  const appSign = process.env.VITE_ZEGO_APP_SIGN || "";
+  const appId = Number(process.env.ZEGO_APP_ID) || Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
+  const appSign = process.env.ZEGO_APP_SIGN || process.env.VITE_ZEGO_APP_SIGN || "";
   return res.json({
     success: true,
     appId,

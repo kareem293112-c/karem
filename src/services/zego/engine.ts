@@ -68,18 +68,18 @@ export class ZegoEngineManager {
 
     private async setupEngine() {
         try {
-            // Setup a global autoplay unlocker for WebRTC audio elements on user interaction
+            // Setup a global autoplay unlocker for WebRTC audio/video elements on user interaction
             if (typeof window !== 'undefined') {
                 const unlockAutoplay = () => {
-                    const audios = document.querySelectorAll('audio[id^="zego-audio-"]');
-                    audios.forEach((el) => {
-                        const audio = el as HTMLAudioElement;
-                        if (audio.paused) {
-                            console.log("[ZEGO] Attempting to unlock/play blocked audio element:", audio.id);
-                            audio.play().then(() => {
-                                console.log("[ZEGO] Successfully unlocked and playing audio:", audio.id);
+                    const mediaElements = document.querySelectorAll('audio[id^="zego-audio-"], video[id^="zego-video-"]');
+                    mediaElements.forEach((el) => {
+                        const media = el as HTMLMediaElement;
+                        if (media.paused) {
+                            console.log("[ZEGO] Attempting to unlock/play blocked media element:", media.id);
+                            media.play().then(() => {
+                                console.log("[ZEGO] Successfully unlocked and playing media:", media.id);
                             }).catch(err => {
-                                console.warn("[ZEGO] Failed to play audio during unlock gesture:", audio.id, err);
+                                console.warn("[ZEGO] Failed to play media during unlock gesture:", media.id, err);
                             });
                         }
                     });
@@ -113,24 +113,38 @@ export class ZegoEngineManager {
                     for (const stream of streamList) {
                         console.log("[ZEGO] Remote stream added:", stream.streamID);
                         try {
-                            const remoteStream = await (this.zg as any).startPlayingStream(stream.streamID);
+                            const remoteStream = await (this.zg as any).startPlayingStream(stream.streamID, {
+                                video: false,
+                                audio: true
+                            });
                             
-                            // Remove existing audio element for this stream if any
-                            const existing = document.getElementById('zego-audio-' + stream.streamID);
+                            // Remove existing video/audio element for this stream if any
+                            const existing = document.getElementById('zego-video-' + stream.streamID) || document.getElementById('zego-audio-' + stream.streamID);
                             if (existing) {
                                 existing.remove();
                             }
 
-                            const audio = document.createElement('audio');
-                            audio.id = 'zego-audio-' + stream.streamID;
-                            audio.autoplay = true;
-                            audio.setAttribute('playsinline', 'true');
-                            (audio as any).playsInline = true;
-                            audio.srcObject = remoteStream;
-                            document.body.appendChild(audio);
+                            // Create a hidden video element (more reliable for autoplay in modern mobile/desktop browsers than audio elements)
+                            const video = document.createElement('video');
+                            video.id = 'zego-video-' + stream.streamID;
+                            video.autoplay = true;
+                            video.setAttribute('playsinline', 'true');
+                            (video as any).playsInline = true;
+                            // Style it to be completely hidden but technically rendered so the browser doesn't pause it
+                            video.style.position = 'fixed';
+                            video.style.top = '0';
+                            video.style.left = '0';
+                            video.style.width = '1px';
+                            video.style.height = '1px';
+                            video.style.opacity = '0';
+                            video.style.pointerEvents = 'none';
+                            video.style.zIndex = '-9999';
+                            
+                            video.srcObject = remoteStream;
+                            document.body.appendChild(video);
 
                             // Attempt to play explicitly
-                            audio.play().then(() => {
+                            video.play().then(() => {
                                 console.log("[ZEGO] Successfully playing remote stream:", stream.streamID);
                             }).catch(err => {
                                 console.warn("[ZEGO] Autoplay prevented for stream (will unlock on next click/touch):", stream.streamID, err);
@@ -144,6 +158,11 @@ export class ZegoEngineManager {
                         console.log("[ZEGO] Remote stream removed:", stream.streamID);
                         try {
                             await (this.zg as any).stopPlayingStream(stream.streamID);
+                            const video = document.getElementById('zego-video-' + stream.streamID) as HTMLVideoElement;
+                            if (video) {
+                                video.pause();
+                                video.remove();
+                            }
                             const audio = document.getElementById('zego-audio-' + stream.streamID) as HTMLAudioElement;
                             if (audio) {
                                 audio.pause();
