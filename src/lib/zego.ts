@@ -19,9 +19,37 @@ export async function getZegoEngine(): Promise<ZegoExpressEngine | null> {
     try {
         await (zg as any).setScenario(3);
         (zg as any).enableHeadphoneMonitoring(true);
+
+        // Listen for stream updates to automatically play new streams
+        (zg as any).on('roomStreamUpdate', (roomID: string, updateType: string, streamList: any[]) => {
+            if (updateType === 'ADD') {
+                streamList.forEach(stream => {
+                    (zg as any).startPlayingStream(stream.streamID);
+                });
+            } else if (updateType === 'DELETE') {
+                streamList.forEach(stream => {
+                    (zg as any).stopPlayingStream(stream.streamID);
+                });
+            }
+        });
+
     } catch(e) {
         console.error("Failed to set scenario or enable monitoring", e);
     }
   }
   return zg;
+}
+
+export async function startPublishing(streamID: string) {
+    const engine = await getZegoEngine();
+    if (engine) {
+        (engine as any).startPublishingStream(streamID);
+    }
+}
+
+export async function stopPublishing(streamID: string) {
+    const engine = await getZegoEngine();
+    if (engine) {
+        (engine as any).stopPublishingStream(streamID);
+    }
 }

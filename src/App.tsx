@@ -53,7 +53,7 @@ import {
   generateRSAKeyPair,
   exportPublicKey
 } from './lib/crypto';
-import { getZegoEngine } from './lib/zego';
+import { getZegoEngine, startPublishing, stopPublishing } from './lib/zego';
 import {
   GIFTS,
   INITIAL_GIFT_BALANCE,
@@ -1437,7 +1437,7 @@ export default function App() {
   };
 
   // Perform Host Seat Management operations
-  const handleHostAction = (action: 'mute' | 'lock' | 'kick' | 'leave') => {
+  const handleHostAction = async (action: 'mute' | 'lock' | 'kick' | 'leave') => {
     if (!activeRoom || selectedSeatIndex === null || !currentUser) return;
 
     const seat = activeRoom.seats[selectedSeatIndex];
@@ -1462,6 +1462,11 @@ export default function App() {
       if (seat.userId === currentUser.id) {
         updatedSeats[selectedSeatIndex] = { ...seat, userId: null };
       }
+    }
+
+    // Audio stream management
+    if (seat.userId === currentUser.id && updatedSeats[selectedSeatIndex].userId === null) {
+      stopPublishing(currentUser.id + "_stream");
     }
 
     const updatedRoom = { ...activeRoom, seats: updatedSeats };
@@ -3933,7 +3938,7 @@ export default function App() {
 
                       {/* Close X Button */}
                       <button
-                        onClick={() => {
+                        onClick={async () => {
                           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                             wsRef.current.send(JSON.stringify({
                               action: 'leave',
@@ -3941,6 +3946,10 @@ export default function App() {
                               userId: currentUser.id,
                               userName: currentUser.name
                             }));
+                          }
+                          const isOnSeat = activeRoom.seats.some(s => s.userId === currentUser.id);
+                          if (isOnSeat) {
+                            stopPublishing(currentUser.id + "_stream");
                           }
                           const cleanedSeats = activeRoom.seats.map(s => s.userId === currentUser.id ? { ...s, userId: null } : s);
                           const updatedRoom = { ...activeRoom, seats: cleanedSeats };
@@ -4275,7 +4284,7 @@ export default function App() {
 
                       {/* Mic Speak Controller Button (Right next to Input box) */}
                       <button
-                        onClick={() => {
+                        onClick={async () => {
                           const userSeatIndex = activeRoom.seats.findIndex(s => s.userId === currentUser.id);
                           
                           if (userSeatIndex === -1) {
@@ -4300,6 +4309,8 @@ export default function App() {
                                   seats: updatedSeats
                                 }));
                               }
+                              // Start publishing
+                              startPublishing(currentUser.id + "_stream");
                             } else {
                               alert('عذراً، جميع المقاعد ممتلئة حالياً! يرجى الانتظار لحين مغادرة أحد المتحدثين لكي تتمكن من الصعود والتحدث.');
                             }
@@ -4320,6 +4331,13 @@ export default function App() {
                                   roomId: activeRoom.id,
                                   seats: updatedSeats
                               }));
+                            }
+                            
+                            // Handle publishing/stopping based on mute status
+                            if (nextMuteStatus) {
+                                stopPublishing(currentUser.id + "_stream");
+                            } else {
+                                startPublishing(currentUser.id + "_stream");
                             }
                           }
                         }}
