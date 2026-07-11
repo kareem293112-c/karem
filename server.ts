@@ -79,7 +79,7 @@ function getFirestoreDb() {
 }
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = 3000;
 
 // Enable JSON body parsing
 app.use(express.json());
@@ -1827,6 +1827,18 @@ app.post("/api/auth/zego-token", (req, res) => {
     console.error("Zego token generation failed:", error);
     return res.status(500).json({ error: "Failed to generate Zego token: " + (error.message || error) });
   }
+});
+
+
+// Zego Client Config Endpoint
+app.get("/api/auth/zego-config", (req, res) => {
+  const appId = Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
+  const appSign = process.env.VITE_ZEGO_APP_SIGN || "";
+  return res.json({
+    success: true,
+    appId,
+    appSign
+  });
 });
 
 

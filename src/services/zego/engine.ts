@@ -19,13 +19,28 @@ export class ZegoEngineManager {
     public async getEngine(): Promise<ZegoExpressEngine | null> {
         if (!this.zg) {
             this.state = 'Connecting';
-            const appId = Number((import.meta as any).env.VITE_ZEGO_APP_ID);
-            const appSign = (import.meta as any).env.VITE_ZEGO_APP_SIGN;
+            let appId = Number((import.meta as any).env.VITE_ZEGO_APP_ID);
+            let appSign = (import.meta as any).env.VITE_ZEGO_APP_SIGN;
+
+            if (!appId || !appSign) {
+                console.log("[ZEGO] Client environment variables not found. Fetching config from server...");
+                try {
+                    const response = await fetch("/api/auth/zego-config");
+                    const data = await response.json();
+                    if (data.success) {
+                        appId = data.appId;
+                        appSign = data.appSign;
+                        console.log("[ZEGO] Successfully loaded config from server. App ID:", appId);
+                    }
+                } catch (err) {
+                    console.error("[ZEGO] Failed to fetch config from server:", err);
+                }
+            }
 
             console.log(
                 "ZEGO CONFIG",
-                (import.meta as any).env.VITE_ZEGO_APP_ID,
-                (import.meta as any).env.VITE_ZEGO_APP_SIGN
+                appId,
+                appSign
             );
 
             if (!appId || !appSign) {
