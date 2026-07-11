@@ -42,7 +42,7 @@ export class ZegoEngineManager {
 
     private async setupEngine() {
         try {
-            await (this.zg as any).setScenario(3);
+            // await (this.zg as any).setScenario(3);
             (this.zg as any).enableHeadphoneMonitoring(true);
 
             (this.zg as any).on('roomStreamUpdate', (roomID: string, updateType: string, streamList: any[]) => {
