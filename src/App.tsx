@@ -53,6 +53,7 @@ import {
   generateRSAKeyPair,
   exportPublicKey
 } from './lib/crypto';
+import { getZegoEngine } from './lib/zego';
 import {
   GIFTS,
   INITIAL_GIFT_BALANCE,
@@ -947,9 +948,18 @@ export default function App() {
 
   // Voice capture effect
   useEffect(() => {
-    // Agora/TRTC voice capture has been removed.
-    // Integrate ZegoCloud SDK here when needed.
-  }, [currentScreen, activeRoom?.id, currentUser?.id, myCurrentSeatIndex, myCurrentSeatMuted]);
+    async function initZego() {
+      if (activeRoom && currentUser) {
+        try {
+          const engine = await getZegoEngine();
+          console.log("Zego engine initialized");
+        } catch (e) {
+          console.error("Zego initialization failed", e);
+        }
+      }
+    }
+    initZego();
+  }, [activeRoom?.id, currentUser?.id]);
 
 
   // Relocated states to the top of the App component to prevent block-scoped reference errors.
@@ -1860,7 +1870,6 @@ export default function App() {
                   <div className="pb-3 mb-3 border-b border-slate-800">
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">شجرة ملفات فلاتر الهاتف</span>
                   </div>
-                  {renderFolderTree(FLUTTER_FOLDER_STRUCTURE)}
                 </div>
 
                 {/* Right Side: Code Viewer (8 Cols) */}
@@ -2381,10 +2390,7 @@ export default function App() {
                         <div className="fixed bottom-20 left-4 z-40">
                           {(() => {
                             const myRoom = rooms.find(r => 
-                              (r.owner_id && currentUser?.id && r.owner_id === currentUser.id) ||
-                              (r.owner_id && currentUser?.name && r.owner_id === currentUser.name) ||
-                              (r.hostName && currentUser?.name && r.hostName === currentUser.name) ||
-                              (currentUser?.name && (currentUser.name.includes("ABDULKERIM") || currentUser.name.includes("GAREZ")) && (r.owner_id === "KK030Z0nOTd6f4JGcpL0KbwR9Gi2" || r.hostName?.includes("ABDULKERIM") || r.name === "حلبي" || r.name === "ؤ"))
+                              (r.owner_id && currentUser?.id && r.owner_id === currentUser.id)
                             );
                             if (myRoom) {
                               return (
