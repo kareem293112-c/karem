@@ -57,14 +57,13 @@ export class ZegoEngineManager {
         }
 
         try {
-            // توليد خادم الاتصال لـ WebRTC بناءً على المعرف
-            const serverUrl = `wss://webliveroom${appId}-api.zegocloud.com/ws`;
+            const serverUrl = `wss://webliveroom${appId}://zegocloud.com`;
             this.zg = new ZegoExpressEngine(appId, serverUrl);
             this.state = 'Connected';
             console.log("[ZEGO] Engine initialized successfully.");
 
             this.initAudioContext();
-            this.setupEngineEvents(); // تشغيل الاستماع للأحداث فور التأسيس
+            this.setupEngineEvents(); 
 
             return this.zg;
         } catch (error) {
@@ -74,7 +73,6 @@ export class ZegoEngineManager {
         }
     }
 
-    // إعداد الأحداث والتقاط أصوات الأعضاء بشكل دائم
     private setupEngineEvents() {
         if (!this.zg) return;
 
@@ -85,7 +83,6 @@ export class ZegoEngineManager {
                 for (let i = 0; i < streamList.length; i++) {
                     const remoteStreamID = streamList[i].streamID;
                     
-                    // منع تكرار تفعيل البث الخاص بك لمنع الصدى
                     if (this.localStreams.has(remoteStreamID)) continue;
 
                     console.log("[ZEGO] Remote user active. Streaming voice from ID:", remoteStreamID);
@@ -98,7 +95,7 @@ export class ZegoEngineManager {
                             remoteAudio = document.createElement('audio');
                             remoteAudio.id = `audio_${remoteStreamID}`;
                             remoteAudio.autoplay = true;
-                            remoteAudio.setAttribute('playsinline', 'true'); // تجاوز حظر iOS/Safari
+                            remoteAudio.setAttribute('playsinline', 'true'); 
                             document.body.appendChild(remoteAudio);
                         }
                         remoteAudio.srcObject = remoteStream;
@@ -134,7 +131,7 @@ export class ZegoEngineManager {
             const engine = await this.getEngine();
             if (!engine) throw new Error("Zego Engine not initialized");
 
-            this.initAudioContext(); // إيقاظ الصوت مع تفاعل الضغط على المقعد
+            this.initAudioContext(); 
 
             console.log("[ZEGO] Creating local audio-only stream for:", streamID);
             const localStream = await engine.createStream({
@@ -156,6 +153,12 @@ export class ZegoEngineManager {
     }
 
     public async stopPublishing(streamID: string) {
+        // حماية لمنع الواجهة من فصل الصوت تلقائياً أثناء الجلوس على المقعد
+        if (this.state === 'Publishing' && this.localStreams.has(streamID)) {
+            console.log("[ZEGO-GUARD] Preventing accidental microphone shutdown for stream:", streamID);
+            return; 
+        }
+
         const engine = await this.getEngine();
         if (engine) {
             try {
