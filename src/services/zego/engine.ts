@@ -6,6 +6,8 @@ export class ZegoEngineManager {
     private zg: ZegoExpressEngine | null = null;
     private state: ZegoState = 'Idle';
     private localStreams: Map<string, any> = new Map();
+    private audioCtx: any = null;
+    private streamSources: Map<string, any> = new Map();
 
     private constructor() {}
 
@@ -14,6 +16,28 @@ export class ZegoEngineManager {
             ZegoEngineManager.instance = new ZegoEngineManager();
         }
         return ZegoEngineManager.instance;
+    }
+
+    private initAudioContext() {
+        if (typeof window === 'undefined') return;
+        try {
+            if (!this.audioCtx) {
+                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                if (AudioContextClass) {
+                    this.audioCtx = new AudioContextClass();
+                    console.log("[ZEGO] Global AudioContext created. State:", this.audioCtx.state);
+                }
+            }
+            if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                this.audioCtx.resume().then(() => {
+                    console.log("[ZEGO] Global AudioContext resumed successfully.");
+                }).catch((err: any) => {
+                    console.warn("[ZEGO] Failed to resume AudioContext:", err);
+                });
+            }
+        } catch (e) {
+            console.error("[ZEGO] Error in initAudioContext:", e);
+        }
     }
 
     public async getEngine(): Promise<ZegoExpressEngine | null> {
@@ -42,24 +66,32 @@ export class ZegoEngineManager {
                 console.log("[ZEGO] App ID not set or invalid, falling back to default public demo ID 386648123");
                 appId = 386648123;
             }
-            if (!appSign || !appSign.startsWith("wss://")) {
-                console.log("[ZEGO] Server signaling URL is not set or invalid, falling back to public sandbox server: wss://webliveroom-api.sandbox.zego.im/ws");
-                appSign = "wss://webliveroom-api.sandbox.zego.im/ws";
+
+            // Intelligently handle server signaling URL vs App Sign
+            let serverUrl = appSign;
+            if (!serverUrl || !serverUrl.startsWith("wss://")) {
+                if (appId === 386648123) {
+                    console.log("[ZEGO] Falling back to public sandbox server for default App ID");
+                    serverUrl = "wss://webliveroom-api.sandbox.zego.im/ws";
+                } else {
+                    console.log(`[ZEGO] Constructing production server URL for App ID ${appId}`);
+                    serverUrl = `wss://webliveroom${appId}-api.zegocloud.com/ws`;
+                }
             }
 
             console.log(
                 "ZEGO CONFIG",
                 appId,
-                appSign
+                serverUrl
             );
 
-            if (!appId || !appSign) {
+            if (!appId || !serverUrl) {
                 console.warn('VITE_ZEGO_APP_ID and VITE_ZEGO_APP_SIGN are not set.');
                 this.state = 'Disconnected';
                 return null;
             }
 
-            this.zg = new ZegoExpressEngine(appId, appSign);
+            this.zg = new ZegoExpressEngine(appId, serverUrl);
             await this.setupEngine();
             this.state = 'Connected';
         }
@@ -71,6 +103,9 @@ export class ZegoEngineManager {
             // Setup a global autoplay unlocker for WebRTC audio/video elements on user interaction
             if (typeof window !== 'undefined') {
                 const unlockAutoplay = () => {
+                    // Initialize or resume the Web Audio context inside user gesture context
+                    this.initAudioContext();
+
                     const mediaElements = document.querySelectorAll('audio[id^="zego-audio-"], video[id^="zego-video-"]');
                     mediaElements.forEach((el) => {
                         const media = el as HTMLMediaElement;
@@ -124,31 +159,45 @@ export class ZegoEngineManager {
                                 existing.remove();
                             }
 
-                            // Create a hidden video element (more reliable for autoplay in modern mobile/desktop browsers than audio elements)
-                            const video = document.createElement('video');
-                            video.id = 'zego-video-' + stream.streamID;
-                            video.autoplay = true;
-                            video.setAttribute('playsinline', 'true');
-                            (video as any).playsInline = true;
-                            // Style it to be completely hidden but technically rendered so the browser doesn't pause it
-                            video.style.position = 'fixed';
-                            video.style.top = '0';
-                            video.style.left = '0';
-                            video.style.width = '1px';
-                            video.style.height = '1px';
-                            video.style.opacity = '0';
-                            video.style.pointerEvents = 'none';
-                            video.style.zIndex = '-9999';
-                            
-                            video.srcObject = remoteStream;
-                            document.body.appendChild(video);
+                            // Create an audio element to pull the stream tracks (critical for Safari/iOS WebRTC)
+                            const audio = document.createElement('audio');
+                            audio.id = 'zego-audio-' + stream.streamID;
+                            audio.autoplay = true;
+                            audio.setAttribute('playsinline', 'true');
+                            (audio as any).playsInline = true;
+                            audio.srcObject = remoteStream;
+                            document.body.appendChild(audio);
 
-                            // Attempt to play explicitly
-                            video.play().then(() => {
-                                console.log("[ZEGO] Successfully playing remote stream:", stream.streamID);
+                            // Play the audio element explicitly
+                            audio.play().then(() => {
+                                console.log("[ZEGO] Successfully playing remote stream via audio element:", stream.streamID);
                             }).catch(err => {
-                                console.warn("[ZEGO] Autoplay prevented for stream (will unlock on next click/touch):", stream.streamID, err);
+                                console.warn("[ZEGO] Autoplay prevented for audio element (will unlock on next gesture):", stream.streamID, err);
                             });
+
+                            // Try to route the remote stream through our unlocked AudioContext for high-fidelity instant playback (bypasses browser autoplay locks)
+                            try {
+                                this.initAudioContext();
+                                if (this.audioCtx) {
+                                    // Disconnect existing source if any
+                                    if (this.streamSources.has(stream.streamID)) {
+                                        try {
+                                            this.streamSources.get(stream.streamID).disconnect();
+                                        } catch (e) {}
+                                    }
+
+                                    const source = this.audioCtx.createMediaStreamSource(remoteStream);
+                                    source.connect(this.audioCtx.destination);
+                                    this.streamSources.set(stream.streamID, source);
+                                    console.log("[ZEGO] Successfully routed remote stream through AudioContext:", stream.streamID);
+                                    
+                                    // Set HTML audio volume to 0 to prevent echo since AudioContext handles playback
+                                    audio.volume = 0;
+                                }
+                            } catch (audioCtxErr) {
+                                console.warn("[ZEGO] Web Audio API routing failed, falling back to standard HTMLAudioElement:", audioCtxErr);
+                                audio.volume = 1.0;
+                            }
                         } catch (err) {
                             console.error("[ZEGO] Failed to play stream:", stream.streamID, err);
                         }
@@ -158,6 +207,16 @@ export class ZegoEngineManager {
                         console.log("[ZEGO] Remote stream removed:", stream.streamID);
                         try {
                             await (this.zg as any).stopPlayingStream(stream.streamID);
+                            
+                            // Disconnect AudioContext source
+                            const source = this.streamSources.get(stream.streamID);
+                            if (source) {
+                                try {
+                                    source.disconnect();
+                                } catch (e) {}
+                                this.streamSources.delete(stream.streamID);
+                            }
+
                             const video = document.getElementById('zego-video-' + stream.streamID) as HTMLVideoElement;
                             if (video) {
                                 video.pause();
