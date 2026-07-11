@@ -169,6 +169,30 @@ export default function App() {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
 
+  // Architectural Explorer States
+  const [selectedFileKey, setSelectedFileKey] = useState<string>('pubspec');
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
+    'lib': true,
+    'lib/core': true,
+    'lib/features': true,
+    'lib/features/voice_room': true,
+    'lib/features/agent_dashboard': true,
+  });
+  const [copiedNotification, setCopiedNotification] = useState(false);
+  const [activeTab, setActiveTab] = useState<'architecture' | 'code' | 'specs'>('architecture');
+
+  // Interactive Live & Premium State Additions
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [currentTime, setCurrentTime] = useState('');
+  const [speakingSeatIndex, setSpeakingSeatIndex] = useState<number | null>(null);
+  const [speakingVolume, setSpeakingVolume] = useState<number>(0);
+  const [isZegoLoggedIn, setIsZegoLoggedIn] = useState<boolean>(false);
+  const [isRoomAudioDeafened, setIsRoomAudioDeafened] = useState(false);
+
+  // Real-time microphone level capture for currentUser when they are unmuted on a seat
+  const [realUserMicSpeaking, setRealUserMicSpeaking] = useState(false);
+  const [realUserMicVolume, setRealUserMicVolume] = useState(0);
+
   const checkIfOwner = (room: VoiceRoom | null) => {
     if (!room || !currentUser) return false;
     return !!(
@@ -971,31 +995,7 @@ export default function App() {
   }, []);
 
 
-  // Relocated states to the top of the App component to prevent block-scoped reference errors.
-
-  // Architectural Explorer States
-  const [selectedFileKey, setSelectedFileKey] = useState<string>('pubspec');
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
-    'lib': true,
-    'lib/core': true,
-    'lib/features': true,
-    'lib/features/voice_room': true,
-    'lib/features/agent_dashboard': true,
-  });
-  const [copiedNotification, setCopiedNotification] = useState(false);
-  const [activeTab, setActiveTab] = useState<'architecture' | 'code' | 'specs'>('architecture');
-
-  // Interactive Live & Premium State Additions
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [currentTime, setCurrentTime] = useState('');
-  const [speakingSeatIndex, setSpeakingSeatIndex] = useState<number | null>(null);
-  const [speakingVolume, setSpeakingVolume] = useState<number>(0);
-  const [isZegoLoggedIn, setIsZegoLoggedIn] = useState<boolean>(false);
-  const [isRoomAudioDeafened, setIsRoomAudioDeafened] = useState(false);
-
-  // Real-time microphone level capture for currentUser when they are unmuted on a seat
-  const [realUserMicSpeaking, setRealUserMicSpeaking] = useState(false);
-  const [realUserMicVolume, setRealUserMicVolume] = useState(0);
+  // States relocated to the top of the App component to prevent block-scoped reference errors.
 
   useEffect(() => {
     // Check if current user is unmuted on a seat
