@@ -37,6 +37,16 @@ export class ZegoEngineManager {
                 }
             }
 
+            // Robust fallbacks for public/demo sandbox mode
+            if (!appId || isNaN(appId)) {
+                console.log("[ZEGO] App ID not set or invalid, falling back to default public demo ID 386648123");
+                appId = 386648123;
+            }
+            if (!appSign || !appSign.startsWith("wss://")) {
+                console.log("[ZEGO] Server signaling URL is not set or invalid, falling back to public sandbox server: wss://webliveroom-api.sandbox.zego.im/ws");
+                appSign = "wss://webliveroom-api.sandbox.zego.im/ws";
+            }
+
             console.log(
                 "ZEGO CONFIG",
                 appId,
