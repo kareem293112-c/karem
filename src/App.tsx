@@ -1347,6 +1347,13 @@ export default function App() {
 
   // Handle entering room
   const handleEnterRoom = (room: VoiceRoom) => {
+    // Resume AudioContext inside user gesture
+    getZegoEngine().then(zg => {
+      if (zg && (zg as any).audioContext && (zg as any).audioContext.state === 'suspended') {
+        (zg as any).audioContext.resume();
+      }
+    }).catch(() => {});
+
     if (room.isPrivate) {
       setSelectedLockedRoom(room);
       setRoomPasswordInput('');
@@ -1391,6 +1398,14 @@ export default function App() {
   // Seat Management Actions
   const handleSeatClick = (seatIndex: number) => {
     if (!activeRoom || !currentUser) return;
+
+    // Resume AudioContext inside user gesture
+    getZegoEngine().then(zg => {
+      if (zg && (zg as any).audioContext && (zg as any).audioContext.state === 'suspended') {
+        (zg as any).audioContext.resume();
+      }
+    }).catch(() => {});
+
     const seat = activeRoom.seats[seatIndex];
     const isAuthorizedHost = checkIfOwner(activeRoom) || (activeRoom.seats[0] && activeRoom.seats[0].userId === currentUser.id);
 
