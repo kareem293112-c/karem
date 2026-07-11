@@ -956,14 +956,31 @@ export default function App() {
         try {
           const engine = await getZegoEngine();
           if (engine && isMounted) {
-            console.log("Zego engine initialized. Logging into room:", roomIdToJoin);
-            await (engine as any).loginRoom(
-              roomIdToJoin,
-              "",
-              { userID: currentUser.id, userName: currentUser.name },
-              { userUpdate: true }
-            );
-            console.log("Zego room login success:", roomIdToJoin);
+            console.log("Zego engine initialized. Fetching token for:", roomIdToJoin);
+            const tokenResponse = await fetch("/api/auth/zego-token", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                userId: currentUser.id,
+                room_id: roomIdToJoin,
+              }),
+            });
+            const tokenData = await tokenResponse.json();
+            if (!tokenData.success || !tokenData.token) {
+              throw new Error(tokenData.error || "Failed to fetch Zego token");
+            }
+            if (isMounted) {
+              console.log("Successfully fetched Zego token, logging into room:", roomIdToJoin);
+              await (engine as any).loginRoom(
+                roomIdToJoin,
+                tokenData.token,
+                { userID: currentUser.id, userName: currentUser.name },
+                { userUpdate: true }
+              );
+              console.log("Zego room login success:", roomIdToJoin);
+            }
           }
         } catch (e) {
           console.error("Zego initialization/login failed", e);

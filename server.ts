@@ -9,6 +9,7 @@ import { initializeApp, getApps, applicationDefault } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import { GoogleAuth } from "google-auth-library";
+import { createCipheriv } from "crypto";
 
 // Initialize database
 initDb();
@@ -1675,6 +1676,156 @@ app.post("/api/auth/tencent-token", (req, res) => {
       expire,
       isMock: true
     });
+  }
+});
+
+
+
+// ==================== ZEGO TOKEN GENERATOR ====================
+
+enum ZegoErrorCode {
+  success                       = 0,
+  appIDInvalid                  = 1,
+  userIDInvalid                 = 3,
+  secretInvalid                 = 5,
+  effectiveTimeInSecondsInvalid = 6
+}
+
+function RndNum(a: number, b: number): number {
+  return Math.ceil((a + (b - a)) * Math.random());
+}
+
+function makeRandomIv(): string {
+  const str = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const result = [];
+  for (let i = 0; i < 16; i++) {
+    const r = Math.floor(Math.random() * str.length);
+    result.push(str.charAt(r));
+  }
+  return result.join('');
+}
+
+function getZegoAlgorithm(keyBase64: string): string {
+  const key = Buffer.from(keyBase64);
+  switch (key.length) {
+    case 16:
+      return 'aes-128-cbc';
+    case 24:
+      return 'aes-192-cbc';
+    case 32:
+      return 'aes-256-cbc';
+  }
+  throw new Error('Invalid key length: ' + key.length);
+}
+
+function aesEncryptZego(plainText: string, key: string, iv: string): ArrayBuffer {
+  const cipher = createCipheriv(getZegoAlgorithm(key), Buffer.from(key), Buffer.from(iv));
+  cipher.setAutoPadding(true);
+  const encrypted = cipher.update(plainText);
+  const final = cipher.final();
+  const out = Buffer.concat([encrypted, final]);
+  return Uint8Array.from(out).buffer;
+}
+
+function generateZegoToken04(
+  appId: number,
+  userId: string,
+  secret: string,
+  effectiveTimeInSeconds: number,
+  payload?: string
+): string {
+  if (!appId || typeof appId !== 'number') {
+    throw { errorCode: ZegoErrorCode.appIDInvalid, errorMessage: 'appID invalid' };
+  }
+  if (!userId || typeof userId !== 'string') {
+    throw { errorCode: ZegoErrorCode.userIDInvalid, errorMessage: 'userId invalid' };
+  }
+  if (!secret || typeof secret !== 'string' || secret.length !== 32) {
+    throw { errorCode: ZegoErrorCode.secretInvalid, errorMessage: 'secret must be a 32 byte string' };
+  }
+  if (!effectiveTimeInSeconds || typeof effectiveTimeInSeconds !== 'number') {
+    throw { errorCode: ZegoErrorCode.effectiveTimeInSecondsInvalid, errorMessage: 'effectiveTimeInSeconds invalid' };
+  }
+
+  const createTime = Math.floor(new Date().getTime() / 1000);
+  const tokenInfo = {
+    app_id: appId,
+    user_id: userId,
+    nonce: RndNum(-2147483648, 2147483647),
+    ctime: createTime,
+    expire: createTime + effectiveTimeInSeconds,
+    payload: payload || ''
+  };
+
+  const plaintText = JSON.stringify(tokenInfo);
+  const iv = makeRandomIv();
+  const encryptBuf = aesEncryptZego(plaintText, secret, iv);
+
+  const b1 = new Uint8Array(8);
+  const b2 = new Uint8Array(2);
+  const b3 = new Uint8Array(2);
+
+  new DataView(b1.buffer).setBigInt64(0, BigInt(tokenInfo.expire), false);
+  new DataView(b2.buffer).setUint16(0, iv.length, false);
+  new DataView(b3.buffer).setUint16(0, encryptBuf.byteLength, false);
+
+  const buf = Buffer.concat([
+    Buffer.from(b1),
+    Buffer.from(b2),
+    Buffer.from(iv),
+    Buffer.from(b3),
+    Buffer.from(encryptBuf),
+  ]);
+
+  const dv = new DataView(Uint8Array.from(buf).buffer);
+  return '04' + Buffer.from(dv.buffer).toString('base64');
+}
+
+// Zego Token Generator Endpoint
+app.post("/api/auth/zego-token", (req, res) => {
+  const { userId, room_id } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: "معرف المستخدم (userId) مطلوب" });
+  }
+
+  const appId = Number(process.env.VITE_ZEGO_APP_ID) || 386648123;
+  const appSign = process.env.VITE_ZEGO_APP_SIGN || "";
+
+  if (!appSign) {
+    console.warn("VITE_ZEGO_APP_SIGN is not set. Cannot generate Zego Token.");
+    return res.status(500).json({ error: "ZEGO config error: VITE_ZEGO_APP_SIGN is not set." });
+  }
+
+  let secret = appSign;
+  if (secret.length === 64) {
+    secret = Buffer.from(secret, 'hex').toString('binary');
+  }
+
+  try {
+    const payloadObject = {
+      room_id: room_id || "",
+      privilege: {
+        1: 1, // loginRoom: 1 pass, 0 not pass
+        2: 1  // publishStream: 1 pass, 0 not pass
+      },
+      stream_id_list: null
+    };
+
+    const payload = JSON.stringify(payloadObject);
+    const effectiveTimeInSeconds = 3600 * 24; // 24 hours validity
+
+    const token = generateZegoToken04(appId, userId, secret, effectiveTimeInSeconds, payload);
+
+    return res.json({
+      success: true,
+      appId,
+      userId,
+      token,
+      room_id: room_id || ""
+    });
+  } catch (error: any) {
+    console.error("Zego token generation failed:", error);
+    return res.status(500).json({ error: "Failed to generate Zego token: " + (error.message || error) });
   }
 });
 
