@@ -53,8 +53,7 @@ import {
   generateRSAKeyPair,
   exportPublicKey
 } from './lib/crypto';
-import { getZegoEngine, startPublishing, stopPublishing } from './lib/zego';
-import { ZegoEventBus, ZegoEvents } from './services/zego/events';
+import { AgoraEngineManager } from './services/agora/engine';
 import {
   GIFTS,
   INITIAL_GIFT_BALANCE,
@@ -186,7 +185,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState('');
   const [speakingSeatIndex, setSpeakingSeatIndex] = useState<number | null>(null);
   const [speakingVolume, setSpeakingVolume] = useState<number>(0);
-  const [isZegoLoggedIn, setIsZegoLoggedIn] = useState<boolean>(false);
+  const [isAgoraJoined, setIsAgoraJoined] = useState<boolean>(false);
   const [isRoomAudioDeafened, setIsRoomAudioDeafened] = useState(false);
 
   // Real-time microphone level capture for currentUser when they are unmuted on a seat
@@ -694,9 +693,9 @@ export default function App() {
     };
   }, [e2eePassphrase]);
 
-  // ZegoCloud WebRTC engine handles all high-fidelity real-time audio publishing and playback.
+  // Agora RTC engine handles all high-fidelity real-time audio publishing and playback.
 
-  // Microphone capture and streaming over ZegoCloud RTC Engine
+  // Microphone capture and streaming over Agora RTC Engine
 
 
   // Refs to avoid stale closures in WebSocket event handlers
@@ -889,108 +888,81 @@ export default function App() {
   // Automatically start or stop publishing audio based on seat occupancy and mute status
   useEffect(() => {
     if (!currentUser) return;
-    const streamID = currentUser.id + "_stream";
-    if (isZegoLoggedIn && myCurrentSeatIndex !== null && !myCurrentSeatMuted) {
-      console.log("[ZEGO] Reactive Auto-Publishing stream:", streamID);
-      startPublishing(streamID);
+    const agoraManager = AgoraEngineManager.getInstance();
+    if (isAgoraJoined && myCurrentSeatIndex !== null && !myCurrentSeatMuted) {
+      console.log("[AGORA] Reactive Auto-Publishing microphone");
+      agoraManager.startPublishing();
     } else {
-      console.log("[ZEGO] Reactive Auto-Stopping stream:", streamID);
-      stopPublishing(streamID);
+      console.log("[AGORA] Reactive Auto-Stopping microphone");
+      agoraManager.stopPublishing();
     }
-  }, [myCurrentSeatIndex, myCurrentSeatMuted, currentUser?.id, isZegoLoggedIn]);
+  }, [myCurrentSeatIndex, myCurrentSeatMuted, currentUser?.id, isAgoraJoined]);
 
   // Voice capture effect
   useEffect(() => {
     let isMounted = true;
     const roomIdToJoin = activeRoom?.id;
 
-    async function initZego() {
+    async function initAgora() {
       if (roomIdToJoin && currentUser) {
         try {
-          const engine = await getZegoEngine();
-          if (engine && isMounted) {
-            console.log("Zego engine initialized. Fetching token for:", roomIdToJoin);
-            const tokenResponse = await fetch("/api/auth/zego-token", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                userId: currentUser.id,
-                room_id: roomIdToJoin,
-              }),
-            });
-            const tokenData = await tokenResponse.json();
-            if (!tokenData.success || !tokenData.token) {
-              throw new Error(tokenData.error || "Failed to fetch Zego token");
-            }
-            if (isMounted) {
-              console.log("Successfully fetched Zego token, logging into room:", roomIdToJoin);
-              await (engine as any).loginRoom(
-                roomIdToJoin,
-                tokenData.token,
-                { userID: currentUser.id, userName: currentUser.name },
-                { userUpdate: true }
-              );
-              if (isMounted) {
-                console.log("Zego room login success:", roomIdToJoin);
-                setIsZegoLoggedIn(true);
-              }
-            }
+          console.log("[AGORA] Initializing Agora room:", roomIdToJoin);
+          const agoraManager = AgoraEngineManager.getInstance();
+          await agoraManager.joinAudioRoom(roomIdToJoin, currentUser.id);
+          if (isMounted) {
+            console.log("[AGORA] Agora room join success:", roomIdToJoin);
+            setIsAgoraJoined(true);
           }
         } catch (e) {
-          console.error("Zego initialization/login failed", e);
+          console.error("[AGORA] Agora initialization/join failed", e);
         }
       }
     }
-    initZego();
+    initAgora();
 
     return () => {
       isMounted = false;
-      setIsZegoLoggedIn(false);
+      setIsAgoraJoined(false);
       if (roomIdToJoin) {
-        console.log("Leaving Zego room:", roomIdToJoin);
-        getZegoEngine().then(engine => {
-          if (engine) {
-            (engine as any).logoutRoom(roomIdToJoin);
-            console.log("Zego room logout success:", roomIdToJoin);
-          }
-        }).catch(err => {
-          console.error("Error logging out of Zego room", err);
+        console.log("[AGORA] Leaving Agora room:", roomIdToJoin);
+        AgoraEngineManager.getInstance().leaveAudioRoom().catch(err => {
+          console.error("[AGORA] Error leaving Agora room", err);
         });
       }
     };
   }, [activeRoom?.id, currentUser?.id]);
 
-  // Subscribe to real Zego sound level updates to trigger the speaking indicators dynamically
+  // Subscribe to real Agora volume updates to trigger the speaking indicators dynamically
   useEffect(() => {
-    const handleSoundLevelUpdate = (data: { streamID: string; soundLevel: number }) => {
-      const { streamID, soundLevel } = data;
-      const streamUserId = streamID.split('_')[0];
-      const currentActiveRoom = activeRoomRef.current;
-      if (currentActiveRoom && currentActiveRoom.seats) {
-        const seatIdx = currentActiveRoom.seats.findIndex(s => s.userId === streamUserId);
-        if (seatIdx !== -1) {
-          if (soundLevel > 5) {
-            setSpeakingSeatIndex(seatIdx);
-            setSpeakingVolume(Math.min(100, Math.round(soundLevel)));
-            
-            if (!(window as any).speakingTimers) (window as any).speakingTimers = {};
-            if ((window as any).speakingTimers[streamUserId]) {
-              clearTimeout((window as any).speakingTimers[streamUserId]);
+    const agoraManager = AgoraEngineManager.getInstance();
+    agoraManager.onVolumeIndicator((volumes) => {
+      volumes.forEach((v) => {
+        const streamUserId = v.uid;
+        const soundLevel = v.level;
+        const currentActiveRoom = activeRoomRef.current;
+        if (currentActiveRoom && currentActiveRoom.seats) {
+          const seatIdx = currentActiveRoom.seats.findIndex(s => s.userId === streamUserId);
+          if (seatIdx !== -1) {
+            if (soundLevel > 5) {
+              setSpeakingSeatIndex(seatIdx);
+              setSpeakingVolume(Math.min(100, Math.round(soundLevel)));
+              
+              if (!(window as any).speakingTimers) (window as any).speakingTimers = {};
+              if ((window as any).speakingTimers[streamUserId]) {
+                clearTimeout((window as any).speakingTimers[streamUserId]);
+              }
+              (window as any).speakingTimers[streamUserId] = setTimeout(() => {
+                setSpeakingSeatIndex(null);
+                setSpeakingVolume(0);
+              }, 600);
             }
-            (window as any).speakingTimers[streamUserId] = setTimeout(() => {
-              setSpeakingSeatIndex(null);
-              setSpeakingVolume(0);
-            }, 600);
           }
         }
-      }
-    };
+      });
+    });
 
-    ZegoEventBus.on(ZegoEvents.SOUND_LEVEL_UPDATE, handleSoundLevelUpdate);
     return () => {
-      ZegoEventBus.off(ZegoEvents.SOUND_LEVEL_UPDATE, handleSoundLevelUpdate);
+      agoraManager.onVolumeIndicator(() => {});
     };
   }, []);
 
@@ -1347,12 +1319,8 @@ export default function App() {
 
   // Handle entering room
   const handleEnterRoom = (room: VoiceRoom) => {
-    // Resume AudioContext inside user gesture
-    getZegoEngine().then(zg => {
-      if (zg && (zg as any).audioContext && (zg as any).audioContext.state === 'suspended') {
-        (zg as any).audioContext.resume();
-      }
-    }).catch(() => {});
+    // Resume/init Agora inside user gesture
+    AgoraEngineManager.getInstance().initEngine().catch(() => {});
 
     if (room.isPrivate) {
       setSelectedLockedRoom(room);
@@ -1399,12 +1367,8 @@ export default function App() {
   const handleSeatClick = (seatIndex: number) => {
     if (!activeRoom || !currentUser) return;
 
-    // Resume AudioContext inside user gesture
-    getZegoEngine().then(zg => {
-      if (zg && (zg as any).audioContext && (zg as any).audioContext.state === 'suspended') {
-        (zg as any).audioContext.resume();
-      }
-    }).catch(() => {});
+    // Resume/init Agora inside user gesture
+    AgoraEngineManager.getInstance().initEngine().catch(() => {});
 
     const seat = activeRoom.seats[seatIndex];
     const isAuthorizedHost = checkIfOwner(activeRoom) || (activeRoom.seats[0] && activeRoom.seats[0].userId === currentUser.id);
@@ -1876,7 +1840,7 @@ export default function App() {
                     </li>
                     <li className="flex items-start gap-2">
                       <span className="text-cyan-400 font-bold">●</span>
-                      <span><strong className="text-slate-200">WebRtcVoiceService</strong>: طبقة تجريد تتيح محرك الصوت اللاسلكي ZegoCloud.</span>
+                      <span><strong className="text-slate-200">WebRtcVoiceService</strong>: طبقة تجريد تتيح محرك الصوت اللاسلكي Agora.</span>
                     </li>
                   </ul>
                 </div>
@@ -1970,7 +1934,7 @@ export default function App() {
                 <div className="bg-purple-950/20 p-4 rounded-xl border border-[#7C3AED]/30">
                   <h3 className="text-xs font-bold text-white mb-1">تكامل WebRTC للاتصال الصوتي فائق السرعة</h3>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    تم تضمين واجهة Service المجردة <code className="text-amber-300 font-mono">WebRtcVoiceService</code> للربط مع محرك البث ZegoCloud. يتميز هذا التجريد بتمكين التطبيق من إدارة جودة البث الصوتي وتتبع المتحدثين النشطين (Active Speakers) وإدارة جودة الصوت ثلاثي الأبعاد الموجه للمجالس الخليجية والعربية الكبرى.
+                    تم تضمين واجهة Service المجردة <code className="text-amber-300 font-mono">WebRtcVoiceService</code> للربط مع محرك البث Agora. يتميز هذا التجريد بتمكين التطبيق من إدارة جودة البث الصوتي وتتبع المتحدثين النشطين (Active Speakers) وإدارة جودة الصوت ثلاثي الأبعاد الموجه للمجالس الخليجية والعربية الكبرى.
                   </p>
                 </div>
               </div>
