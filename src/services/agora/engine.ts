@@ -70,16 +70,24 @@ export class AgoraEngineManager {
 
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
             
+            // حماية حاسمة: إذا كانت المعرفات فارغة، قم بتوليد قيم تلقائية فوراً لمنع فشل الاتصال
+            const finalRoomID = roomID && roomID.trim() !== "" ? roomID : "default_room";
+            // تحويل المعرف الرقمي إلى رقم أو تركه كـ string عشوائي متوافق مع Agora
+            const finalUserID = userID && userID.trim() !== "" ? userID : Math.floor(Math.random() * 1000000).toString();
+
+            console.log(`[AGORA] Attempting to join channel: ${finalRoomID} with UserUID: ${finalUserID}`);
+            
             // جلب التوكن ديناميكياً من السيرفر
-            const response = await fetch(`/api/agora-token?channelName=${roomID}&account=${userID}`);
+            const response = await fetch(`/api/agora-token?channelName=${finalRoomID}&account=${finalUserID}`);
             const { token } = await response.json();
             
-            await client.join(appId, roomID, token, userID);
+            // الانضمام الفعلي باستخدام القيم المحمية
+            await client.join(appId, finalRoomID, token, finalUserID);
             this.isJoined = true; // تأكيد نجاح الانضمام
-            console.log(`[AGORA] Successfully joined room: ${roomID}`);
+            console.log(`[AGORA] Successfully joined room: ${finalRoomID}`);
         } catch (err) {
             this.isJoined = false;
-            console.error("[AGORA] Join room failed:", err);
+            console.error("[AGORA] Join room failed completely:", err);
         }
     }
 
