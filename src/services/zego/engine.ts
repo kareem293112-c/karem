@@ -43,6 +43,26 @@ export class ZegoEngineManager {
 
     private async setupEngine() {
         try {
+            // Setup a global autoplay unlocker for WebRTC audio elements on user interaction
+            if (typeof window !== 'undefined') {
+                const unlockAutoplay = () => {
+                    const audios = document.querySelectorAll('audio[id^="zego-audio-"]');
+                    audios.forEach((el) => {
+                        const audio = el as HTMLAudioElement;
+                        if (audio.paused) {
+                            console.log("[ZEGO] Attempting to unlock/play blocked audio element:", audio.id);
+                            audio.play().then(() => {
+                                console.log("[ZEGO] Successfully unlocked and playing audio:", audio.id);
+                            }).catch(err => {
+                                console.warn("[ZEGO] Failed to play audio during unlock gesture:", audio.id, err);
+                            });
+                        }
+                    });
+                };
+                window.addEventListener('click', unlockAutoplay, { passive: true });
+                window.addEventListener('touchstart', unlockAutoplay, { passive: true });
+            }
+
             // Register room stream update listener
             (this.zg as any).on('roomStreamUpdate', async (roomID: string, updateType: 'ADD' | 'DELETE', streamList: any[]) => {
                 console.log("[ZEGO] roomStreamUpdate event:", { roomID, updateType, streamList });
@@ -61,9 +81,17 @@ export class ZegoEngineManager {
                             const audio = document.createElement('audio');
                             audio.id = 'zego-audio-' + stream.streamID;
                             audio.autoplay = true;
+                            audio.setAttribute('playsinline', 'true');
+                            (audio as any).playsInline = true;
                             audio.srcObject = remoteStream;
                             document.body.appendChild(audio);
-                            console.log("[ZEGO] Successfully playing remote stream:", stream.streamID);
+
+                            // Attempt to play explicitly
+                            audio.play().then(() => {
+                                console.log("[ZEGO] Successfully playing remote stream:", stream.streamID);
+                            }).catch(err => {
+                                console.warn("[ZEGO] Autoplay prevented for stream (will unlock on next click/touch):", stream.streamID, err);
+                            });
                         } catch (err) {
                             console.error("[ZEGO] Failed to play stream:", stream.streamID, err);
                         }
