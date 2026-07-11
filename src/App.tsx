@@ -952,7 +952,9 @@ export default function App() {
       if (activeRoom && currentUser) {
         try {
           const engine = await getZegoEngine();
-          console.log("Zego engine initialized");
+          if (engine) {
+            console.log("Zego engine initialized");
+          }
         } catch (e) {
           console.error("Zego initialization failed", e);
         }
