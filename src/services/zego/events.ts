@@ -17,8 +17,6 @@ export const ZegoEvents = {
     STREAM_UPDATE: 'streamUpdate',
     ROOM_UPDATED: 'roomUpdated',
     SEAT_CHANGED: 'seatChanged',
-    USER_JOINED: 'userJoined',
-    USER_LEFT: 'userLeft',
     MIC_ENABLED: 'micEnabled',
     MIC_DISABLED: 'micDisabled',
     PERMISSION_DENIED: 'permissionDenied',

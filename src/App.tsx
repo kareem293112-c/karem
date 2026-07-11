@@ -948,19 +948,44 @@ export default function App() {
 
   // Voice capture effect
   useEffect(() => {
+    let isMounted = true;
+    const roomIdToJoin = activeRoom?.id;
+
     async function initZego() {
-      if (activeRoom && currentUser) {
+      if (roomIdToJoin && currentUser) {
         try {
           const engine = await getZegoEngine();
-          if (engine) {
-            console.log("Zego engine initialized");
+          if (engine && isMounted) {
+            console.log("Zego engine initialized. Logging into room:", roomIdToJoin);
+            await (engine as any).loginRoom(
+              roomIdToJoin,
+              "",
+              { userID: currentUser.id, userName: currentUser.name },
+              { userUpdate: true }
+            );
+            console.log("Zego room login success:", roomIdToJoin);
           }
         } catch (e) {
-          console.error("Zego initialization failed", e);
+          console.error("Zego initialization/login failed", e);
         }
       }
     }
     initZego();
+
+    return () => {
+      isMounted = false;
+      if (roomIdToJoin) {
+        console.log("Leaving Zego room:", roomIdToJoin);
+        getZegoEngine().then(engine => {
+          if (engine) {
+            (engine as any).logoutRoom(roomIdToJoin);
+            console.log("Zego room logout success:", roomIdToJoin);
+          }
+        }).catch(err => {
+          console.error("Error logging out of Zego room", err);
+        });
+      }
+    };
   }, [activeRoom?.id, currentUser?.id]);
 
 
