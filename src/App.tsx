@@ -54,6 +54,7 @@ import {
   exportPublicKey
 } from './lib/crypto';
 import { getZegoEngine, startPublishing, stopPublishing } from './lib/zego';
+import { ZegoEventBus, ZegoEvents } from './services/zego/events';
 import {
   GIFTS,
   INITIAL_GIFT_BALANCE,
@@ -669,90 +670,9 @@ export default function App() {
     };
   }, [e2eePassphrase]);
 
-  // Helper to downsample audio to reduce WebSocket payload size and bandwidth usage
-  const resampleAudio = (audioBuffer: Float32Array, fromRate: number, toRate: number): Float32Array => {
-    if (fromRate === toRate) return audioBuffer;
-    const interpolationStep = fromRate / toRate;
-    const newLength = Math.round(audioBuffer.length / interpolationStep);
-    const result = new Float32Array(newLength);
-    for (let i = 0; i < newLength; i++) {
-      const rawIndex = i * interpolationStep;
-      const index = Math.floor(rawIndex);
-      const nextIndex = Math.min(index + 1, audioBuffer.length - 1);
-      const fraction = rawIndex - index;
-      result[i] = audioBuffer[index] * (1 - fraction) + audioBuffer[nextIndex] * fraction;
-    }
-    return result;
-  };
+  // ZegoCloud WebRTC engine handles all high-fidelity real-time audio publishing and playback.
 
-  // Play incoming voice stream audio via Web Audio API with smooth jitter buffering & scheduled playback
-  const playAudioChunk = (speakerId: string, pcmData: number[], senderSampleRate?: number) => {
-    if (speakerId === currentUser?.id) return;
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!(window as any).sharedAudioContext) {
-        (window as any).sharedAudioContext = new AudioContextClass();
-      }
-      const ctx = (window as any).sharedAudioContext;
-      if (ctx.state === 'suspended') {
-        ctx.resume();
-      }
-      
-      const targetSampleRate = senderSampleRate || 16000;
-      const buffer = ctx.createBuffer(1, pcmData.length, targetSampleRate);
-      const channel = buffer.getChannelData(0);
-      for (let i = 0; i < pcmData.length; i++) {
-        channel[i] = pcmData[i];
-      }
-      
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      
-      // Elegant jitter buffering & audio concatenating schedule
-      const currentTime = ctx.currentTime;
-      if (!(window as any).nextPlayTime || (window as any).nextPlayTime < currentTime) {
-        // Start playing slightly in the future (0.08 seconds) to absorb network jitter smoothly
-        (window as any).nextPlayTime = currentTime + 0.08;
-      }
-      
-      source.start((window as any).nextPlayTime);
-      (window as any).nextPlayTime += buffer.duration;
-
-      // Trigger speaking wave indicator on seat
-      if (activeRoom) {
-        const seatIdx = activeRoom.seats.findIndex(s => s.userId === speakerId);
-        if (seatIdx !== -1) {
-          setSpeakingSeatIndex(seatIdx);
-          
-          // Calculate volume level dynamically from the raw PCM voice values for live TRTC Volume Evaluation!
-          let sumSquares = 0;
-          for (let i = 0; i < pcmData.length; i++) {
-            sumSquares += pcmData[i] * pcmData[i];
-          }
-          const rms = Math.sqrt(sumSquares / pcmData.length);
-          const volumeLevel = Math.min(100, Math.round(rms * 450)); // Scale dynamically to standard 0-100 spectrum
-          setSpeakingVolume(volumeLevel || 40); // default to 40 if silent but active to ensure visual response
-          
-          if (!(window as any).speakingTimers) (window as any).speakingTimers = {};
-          if ((window as any).speakingTimers[speakerId]) {
-            clearTimeout((window as any).speakingTimers[speakerId]);
-          }
-          (window as any).speakingTimers[speakerId] = setTimeout(() => {
-            setSpeakingSeatIndex(null);
-            setSpeakingVolume(0);
-          }, 350);
-        }
-      }
-    } catch (e) {
-      // Audio auto-play block bypass
-    }
-  };
-
-  const isMicWarmStandbyRef = useRef(false);
-  const isVoiceCaptureActiveRef = useRef(false);
-
-  // Microphone capture and streaming over WebSocket with Tencent TRTC GCC-Optimized Warm Standby
+  // Microphone capture and streaming over ZegoCloud RTC Engine
 
 
   // Refs to avoid stale closures in WebSocket event handlers
@@ -895,10 +815,6 @@ export default function App() {
           fetchDbStates();
         }
 
-        else if (data.type === 'audio_stream') {
-          playAudioChunk(data.userId, data.audioData, data.sampleRate);
-        }
-
         else if (data.type === 'new_private_message') {
           setPrivateMessages(prev => {
             if (prev.some(m => m.id === data.message.id)) return prev;
@@ -945,6 +861,19 @@ export default function App() {
   const myCurrentSeat = activeRoom?.seats?.find(s => s.userId === currentUser?.id);
   const myCurrentSeatIndex = myCurrentSeat ? myCurrentSeat.index : null;
   const myCurrentSeatMuted = myCurrentSeat ? myCurrentSeat.isMuted : true;
+
+  // Automatically start or stop publishing audio based on seat occupancy and mute status
+  useEffect(() => {
+    if (!currentUser) return;
+    const streamID = currentUser.id + "_stream";
+    if (myCurrentSeatIndex !== null && !myCurrentSeatMuted) {
+      console.log("[ZEGO] Reactive Auto-Publishing stream:", streamID);
+      startPublishing(streamID);
+    } else {
+      console.log("[ZEGO] Reactive Auto-Stopping stream:", streamID);
+      stopPublishing(streamID);
+    }
+  }, [myCurrentSeatIndex, myCurrentSeatMuted, currentUser?.id]);
 
   // Voice capture effect
   useEffect(() => {
@@ -1004,6 +933,38 @@ export default function App() {
       }
     };
   }, [activeRoom?.id, currentUser?.id]);
+
+  // Subscribe to real Zego sound level updates to trigger the speaking indicators dynamically
+  useEffect(() => {
+    const handleSoundLevelUpdate = (data: { streamID: string; soundLevel: number }) => {
+      const { streamID, soundLevel } = data;
+      const streamUserId = streamID.split('_')[0];
+      const currentActiveRoom = activeRoomRef.current;
+      if (currentActiveRoom && currentActiveRoom.seats) {
+        const seatIdx = currentActiveRoom.seats.findIndex(s => s.userId === streamUserId);
+        if (seatIdx !== -1) {
+          if (soundLevel > 5) {
+            setSpeakingSeatIndex(seatIdx);
+            setSpeakingVolume(Math.min(100, Math.round(soundLevel)));
+            
+            if (!(window as any).speakingTimers) (window as any).speakingTimers = {};
+            if ((window as any).speakingTimers[streamUserId]) {
+              clearTimeout((window as any).speakingTimers[streamUserId]);
+            }
+            (window as any).speakingTimers[streamUserId] = setTimeout(() => {
+              setSpeakingSeatIndex(null);
+              setSpeakingVolume(0);
+            }, 600);
+          }
+        }
+      }
+    };
+
+    ZegoEventBus.on(ZegoEvents.SOUND_LEVEL_UPDATE, handleSoundLevelUpdate);
+    return () => {
+      ZegoEventBus.off(ZegoEvents.SOUND_LEVEL_UPDATE, handleSoundLevelUpdate);
+    };
+  }, []);
 
 
   // Relocated states to the top of the App component to prevent block-scoped reference errors.

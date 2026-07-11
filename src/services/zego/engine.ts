@@ -88,6 +88,24 @@ export class ZegoEngineManager {
                 window.addEventListener('touchstart', unlockAutoplay, { passive: true });
             }
 
+            // Enable sound level monitoring
+            try {
+                if (typeof (this.zg as any).setSoundLevelMonitorCycle === 'function') {
+                    (this.zg as any).setSoundLevelMonitorCycle(200);
+                    console.log("[ZEGO] Sound level monitor cycle activated: 200ms");
+                }
+                
+                (this.zg as any).on('soundLevelUpdate', (soundLevels: { streamID: string; soundLevel: number; type: string }[]) => {
+                    soundLevels.forEach(item => {
+                        const streamID = item.streamID;
+                        const soundLevel = item.soundLevel;
+                        ZegoEventBus.emit(ZegoEvents.SOUND_LEVEL_UPDATE, { streamID, soundLevel });
+                    });
+                });
+            } catch (e) {
+                console.warn("[ZEGO] Sound level monitoring setup failed or unsupported:", e);
+            }
+
             // Register room stream update listener
             (this.zg as any).on('roomStreamUpdate', async (roomID: string, updateType: 'ADD' | 'DELETE', streamList: any[]) => {
                 console.log("[ZEGO] roomStreamUpdate event:", { roomID, updateType, streamList });
@@ -148,6 +166,10 @@ export class ZegoEngineManager {
         const engine = await this.getEngine();
         if (engine) {
             try {
+                if (this.localStreams.has(streamID)) {
+                    console.log("[ZEGO] Already publishing stream:", streamID);
+                    return;
+                }
                 console.log("[ZEGO] Creating local audio-only stream for:", streamID);
                 const localStream = await (engine as any).createStream({
                     camera: {

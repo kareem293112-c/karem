@@ -21,6 +21,7 @@ export const ZegoEvents = {
     MIC_DISABLED: 'micDisabled',
     PERMISSION_DENIED: 'permissionDenied',
     HOST_CHANGED: 'hostChanged',
+    SOUND_LEVEL_UPDATE: 'soundLevelUpdate',
 };
 
 export type ZegoState = 'Idle' | 'Connecting' | 'Connected' | 'Publishing' | 'Reconnecting' | 'Disconnected';

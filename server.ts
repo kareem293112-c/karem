@@ -347,17 +347,6 @@ wss.on("connection", (ws: CustomWebSocket) => {
           }));
         }
       }
-
-      else if (action === "audio_chunk") {
-        const { audioData } = data; // PCM or audio buffer
-        // Relay audio chunk to all other seat members in the room
-        broadcastToRoom(roomId, {
-          type: "audio_stream",
-          userId,
-          userName,
-          audioData
-        }, ws);
-      }
     } catch (e) {
       console.error("Error processing websocket message:", e);
     }
@@ -570,7 +559,6 @@ app.get("/api/rooms", async (req, res) => {
           xp: d.xp || 0,
           activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
           seats: seats,
-          tencent_room_id: d.tencent_room_id || 0,
           owner_id: d.owner_id || null
         });
       }
@@ -611,7 +599,6 @@ app.get("/api/rooms/:id", async (req, res) => {
           xp: d.xp || 0,
           activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
           seats: seats,
-          tencent_room_id: d.tencent_room_id || 0,
           owner_id: d.owner_id || null
         });
       }
@@ -930,7 +917,6 @@ app.post("/api/agent/transfer", async (req, res) => {
 // ==================== NEW VOICE ROOM API ENDPOINTS ====================
 app.post("/api/rooms/create", async (req, res) => {
   const { room_name, owner_id, is_private, password, host_name, host_avatar } = req.body;
-  const tencent_room_id = Math.floor(Math.random() * 1000000);
   
   // Guard against undefined values to prevent Firestore and local DB validation failures
   const sanitizedRoomName = room_name ? String(room_name).trim() : "مجلس صوتي جديد";
@@ -947,7 +933,6 @@ app.post("/api/rooms/create", async (req, res) => {
       const roomRef = await fDb.collection("voice_rooms").add({
         room_name: sanitizedRoomName,
         owner_id: sanitizedOwnerId,
-        tencent_room_id,
         is_private: !!is_private,
         room_password: sanitizedPassword,
         max_seats: 8,
@@ -969,7 +954,7 @@ app.post("/api/rooms/create", async (req, res) => {
       }
       
       console.log(`Firestore successfully created voice room: ${roomRef.id}`);
-      return res.json({ room_id: roomRef.id, tencent_room_id });
+      return res.json({ room_id: roomRef.id });
     } catch (error: any) {
       console.error("Firestore error creating room:", error);
       lastErrorMsg = error?.message || String(error);
@@ -998,14 +983,13 @@ app.post("/api/rooms/create", async (req, res) => {
       xp: 0,
       activeUsersCount: 1,
       seats: seats,
-      tencent_room_id: tencent_room_id,
       owner_id: sanitizedOwnerId
     };
     
     localDb.rooms.push(newRoom);
     saveDb(localDb);
     console.log(`Fallback local JSON successfully created voice room: ${newRoomId}`);
-    return res.json({ room_id: newRoomId, tencent_room_id });
+    return res.json({ room_id: newRoomId });
   } catch (localError: any) {
     console.error("Fallback local database write failed:", localError);
     const combinedError = lastErrorMsg 
@@ -1637,50 +1621,6 @@ app.post("/api/clans/join", async (req, res) => {
 
 
 
-// Tencent Cloud TRTC Token Generator Endpoint (Generate UserSig)
-app.post("/api/auth/tencent-token", (req, res) => {
-  const { userId, room_id } = req.body;
-  if (!userId) {
-    return res.status(400).json({ error: "معرف المستخدم (userId) مطلوب" });
-  }
-
-  const sdkAppId = Number(process.env.TENCENT_SDK_APP_ID) || 1400000000;
-  const secretKey = process.env.TENCENT_SECRET_KEY || "your_mock_secret_key_for_testing_purposes";
-  const expire = 86400; // 24 hours
-
-  try {
-    const TLSSigAPIv2 = require("tls-sig-api-v2");
-    const api = new TLSSigAPIv2.Api(sdkAppId, secretKey);
-    const userSig = api.genUserSig(userId, expire);
-
-    return res.json({
-      success: true,
-      sdkAppId,
-      userId,
-      userSig,
-      room_id: room_id || "sada_trtc_room",
-      expire
-    });
-  } catch (e: any) {
-    console.warn("Tencent TLSSigAPIv2 generation failed, using fallback:", e.message || e);
-    const crypto = require("crypto");
-    const mockSigInput = `${sdkAppId}:${userId}:${Date.now()}`;
-    const mockSig = crypto.createHmac("sha256", secretKey).update(mockSigInput).digest("base64");
-
-    return res.json({
-      success: true,
-      sdkAppId,
-      userId,
-      userSig: mockSig,
-      room_id: room_id || "sada_trtc_room",
-      expire,
-      isMock: true
-    });
-  }
-});
-
-
-
 // ==================== ZEGO TOKEN GENERATOR ====================
 
 enum ZegoErrorCode {
@@ -1705,9 +1645,9 @@ function makeRandomIv(): string {
   return result.join('');
 }
 
-function getZegoAlgorithm(keyBase64: string): string {
-  const key = Buffer.from(keyBase64);
-  switch (key.length) {
+function getZegoAlgorithm(key: string): string {
+  const keyBuf = Buffer.from(key, 'binary');
+  switch (keyBuf.length) {
     case 16:
       return 'aes-128-cbc';
     case 24:
@@ -1715,13 +1655,15 @@ function getZegoAlgorithm(keyBase64: string): string {
     case 32:
       return 'aes-256-cbc';
   }
-  throw new Error('Invalid key length: ' + key.length);
+  throw new Error('Invalid key length: ' + keyBuf.length);
 }
 
 function aesEncryptZego(plainText: string, key: string, iv: string): ArrayBuffer {
-  const cipher = createCipheriv(getZegoAlgorithm(key), Buffer.from(key), Buffer.from(iv));
+  const keyBuf = Buffer.from(key, 'binary');
+  const ivBuf = Buffer.from(iv, 'binary');
+  const cipher = createCipheriv(getZegoAlgorithm(key), keyBuf, ivBuf);
   cipher.setAutoPadding(true);
-  const encrypted = cipher.update(plainText);
+  const encrypted = cipher.update(plainText, 'utf8');
   const final = cipher.final();
   const out = Buffer.concat([encrypted, final]);
   return Uint8Array.from(out).buffer;

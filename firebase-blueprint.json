@@ -27,12 +27,11 @@
       "properties": {
         "room_name": { "type": "string" },
         "owner_id": { "type": "string" },
-        "tencent_room_id": { "type": "number" },
         "is_private": { "type": "boolean" },
         "room_password": { "type": "string" },
         "max_seats": { "type": "number" }
       },
-      "required": ["room_name", "owner_id", "tencent_room_id"]
+      "required": ["room_name", "owner_id"]
     },
     "MicSeat": {
       "title": "MicSeat",
