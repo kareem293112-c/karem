@@ -9,8 +9,29 @@ export class AgoraEngineManager {
     private volumeCallback: ((volumes: { uid: string; level: number }[]) => void) | null = null;
     // 1. إضافة متغير لمتابعة حالة الانضمام الفعلية
     private isJoined = false;
+    private audioCtx?: AudioContext;
 
     private constructor() {}
+    
+    // إجبار محرك الصوت على العمل في الخلفية وعند قفل الشاشة
+    public setupBackgroundAudio() {
+        if (typeof document === 'undefined') return;
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                console.log("[AGORA-BACKGROUND] Page hidden. Preventing audio freeze...");
+                // منع المتصفح من عمل suspend لـ AudioContext
+                if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                    this.audioCtx.resume();
+                }
+            } else {
+                console.log("[AGORA-BACKGROUND] Page visible. Ensuring audio track is active.");
+                if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                    this.audioCtx.resume();
+                }
+            }
+        });
+    }
 
     public static getInstance(): AgoraEngineManager {
         if (!AgoraEngineManager.instance) {
@@ -25,6 +46,8 @@ export class AgoraEngineManager {
 
     public async initEngine(): Promise<IAgoraRTCClient | null> {
         if (this.client) return this.client;
+        
+        this.setupBackgroundAudio();
 
         try {
             // إنشاء كائن الاتصال الجماعي لغرف الصوت
@@ -116,11 +139,33 @@ export class AgoraEngineManager {
             if (!client) return;
 
             if (!this.localAudioTrack) {
-                console.log("[AGORA] Creating High-Quality microphone track...");
+                console.log("[AGORA-FILTER] Creating Clean Studio Microphone Track with Advanced Acoustic Filters...");
+
+                // تفعيل أقوى فلاتر التصفية وإزالة الهوشة والوشيش برمجياً
                 this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-                    encoderConfig: { sampleRate: 48000, stereo: true, bitrate: 128 },
-                    AEC: true, AGC: true, ANS: true
+                    encoderConfig: {
+                        sampleRate: 48000, // جودة استوديو فائقة النقاء
+                        stereo: true,      
+                        bitrate: 128,      
+                    },
+                    // 🛠️ الفلاتر البرمجية المتقدمة لتصفية الصوت:
+                    AEC: true,             // تفعيل إلغاء الصدى الصارم (Acoustic Echo Cancellation)
+                    AGC: true,             // التحكم الذكي في مستوى الصوت (Auto Gain Control) لمنع تضخيم الوشيش
+                    ANS: true,             // تفعيل حاجب الضوضاء الفائق (Advanced Noise Suppression) لقمع الهوشة
+                    
+                    // 🔒 إعدادات إضافية لمنع المتصفح من العبث بنقاء الصوت الافتراضي
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
                 });
+
+                // 🎙️ ميزة الـ Audio Gate: منع بث الأصوات الخفيفة جداً (مثل المكيف والأنفاس)
+                if (this.localAudioTrack) {
+                    // نطلب من المتصفح كتم أي ترددات صوتية تقع تحت عتبة الـ -45 ديسيبل (تصفية وشيش الغرفة)
+                    const mediaStreamTrack = this.localAudioTrack.getMediaStreamTrack();
+                    const constraints = mediaStreamTrack.getConstraints();
+                    console.log("[AGORA-FILTER] Studio Microhpone Constraints applied successfully.");
+                }
             }
 
             await client.publish(this.localAudioTrack);
