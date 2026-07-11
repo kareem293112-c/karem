@@ -3,9 +3,11 @@ import { ZegoEventBus, ZegoEvents } from './events';
 
 export class ZegoPublisherService {
     public async start(streamID: string) {
+        console.log("START PUBLISH STREAM", streamID);
         const engine = await ZegoEngineManager.getInstance().getEngine();
         if (engine) {
             await (engine as any).startPublishingStream(streamID);
+            console.log("PUBLISH SUCCESS", streamID);
             ZegoEventBus.emit(ZegoEvents.SPEAKER_STARTED, streamID);
         }
     }

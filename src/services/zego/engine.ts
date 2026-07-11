@@ -18,11 +18,11 @@ export class ZegoEngineManager {
     public async getEngine(): Promise<ZegoExpressEngine | null> {
         if (!this.zg) {
             this.state = 'Connecting';
-            const appId = Number(process.env.ZEGO_APP_ID);
-            const appSign = process.env.ZEGO_APP_SIGN;
+            const appId = Number(import.meta.env.VITE_ZEGO_APP_ID);
+            const appSign = import.meta.env.VITE_ZEGO_APP_SIGN;
 
             if (!appId || !appSign) {
-                console.warn('ZEGO_APP_ID and ZEGO_APP_SIGN are not set.');
+                console.warn('VITE_ZEGO_APP_ID and VITE_ZEGO_APP_SIGN are not set.');
                 this.state = 'Disconnected';
                 return null;
             }

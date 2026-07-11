@@ -10,11 +10,13 @@ export class ZegoPlayerService {
         const { updateType, streamList } = data;
         if (updateType === 'ADD') {
             streamList.forEach(stream => {
+                console.log("REMOTE STREAM ADDED:", stream.streamID);
                 this.play(stream.streamID);
                 ZegoEventBus.emit(ZegoEvents.SPEAKER_STARTED, stream.streamID);
             });
         } else if (updateType === 'DELETE') {
             streamList.forEach(stream => {
+                console.log("REMOTE STREAM REMOVED:", stream.streamID);
                 this.stop(stream.streamID);
                 ZegoEventBus.emit(ZegoEvents.SPEAKER_STOPPED, stream.streamID);
             });
