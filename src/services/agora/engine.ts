@@ -69,21 +69,31 @@ export class AgoraEngineManager {
             if (!client) throw new Error("Agora client not initialized");
 
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
-            
-            // حماية المعرفات
             const finalRoomID = roomID && roomID.trim() !== "" ? roomID : "default_room";
-            const finalUserID = userID && userID.trim() !== "" ? userID : Math.floor(Math.random() * 1000000).toString();
-
-            console.log(`[AGORA-BYPASS] Joining channel: ${finalRoomID} directly with Token as NULL`);
             
-            // الحل السحري: تمرير البارامتر الثالث كـ null بشكل صريح لتخطي حماية التوكن التجريبية
-            await client.join(appId, finalRoomID, null, finalUserID);
+            // توليد UID رقمي متوافق مع السيرفر
+            const numericUID = Math.floor(Math.random() * 1000000);
+
+            console.log(`[AGORA] Fetching secure token from backend for channel: ${finalRoomID}...`);
+            
+            // 1. طلب التوكن المشفر من السيرفر الخلفي بشكل ديناميكي
+            const response = await fetch(`/api/agora-token?channelName=${finalRoomID}&uid=${numericUID}`);
+            if (!response.ok) throw new Error("Backend failed to return a valid token");
+            
+            const data = await response.json();
+            const secureToken = data.token;
+            const finalUID = data.uid;
+
+            console.log("[AGORA] Secure token received. Joining protected channel...");
+            
+            // 2. التمرير المشفر الرسمي لـ Agora باستخدام التوكن والـ UID المستلمين
+            await client.join(appId, finalRoomID, secureToken, finalUID);
             
             this.isJoined = true; 
-            console.log(`[AGORA] Successfully joined room: ${finalRoomID} without server token!`);
+            console.log(`[AGORA] Successfully joined secured room: ${finalRoomID}`);
         } catch (err) {
             this.isJoined = false;
-            console.error("[AGORA] Join room failed completely:", err);
+            console.error("[AGORA] Secure Join room failed completely:", err);
         }
     }
 

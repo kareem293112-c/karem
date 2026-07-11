@@ -1706,36 +1706,43 @@ app.get("/api/messages/:userId", (req, res) => {
 });
 
 // Agora Token Generation
-app.get("/api/agora-token", (req, res) => {
-  const channelName = req.query.channelName as string;
-  const account = req.query.account as string;
-  
-  if (!channelName || !account) {
-    return res.status(400).json({ error: "Missing channelName or account" });
-  }
+app.get('/api/agora-token', (req, res) => {
+    const channelName = req.query.channelName as string;
+    const uidStr = req.query.uid as string;
 
-  const appId = process.env.VITE_AGORA_APP_ID;
-  const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE;
+    if (!channelName) {
+        return res.status(400).json({ error: 'channelName is required' });
+    }
 
-  if (!appId || !appCertificate) {
-    return res.status(500).json({ error: "Agora config missing on server" });
-  }
+    const appId = process.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
+    const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
+    
+    // تحويل الـ UID إلى رقم (لأن Agora RTC تتطلب أرقاماً للتوكن القياسي)
+    const uid = uidStr ? parseInt(uidStr, 10) : Math.floor(Math.random() * 1000000);
+    const role = RtcRole.PUBLISHER; // صلاحية البث والاستماع معاً
 
-  const role = RtcRole.PUBLISHER;
-  const expirationTimeInSeconds = 3600;
-  const currentTimestamp = Math.floor(Date.now() / 1000);
-  const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+    // تحديد وقت صلاحية التوكن (ساعة كاملة = 3600 ثانية)
+    const expirationTimeInSeconds = 3600;
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
 
-  const token = RtcTokenBuilder.buildTokenWithUserAccount(
-    appId,
-    appCertificate,
-    channelName,
-    account,
-    role,
-    privilegeExpiredTs
-  );
+    try {
+        // بناء التوكن المشفر ديناميكياً باستخدام شهادة الأمان
+        const token = RtcTokenBuilder.buildTokenWithUid(
+            appId, 
+            appCertificate, 
+            channelName, 
+            uid, 
+            role, 
+            privilegeExpiredTs
+        );
 
-  res.json({ token });
+        console.log(`[SERVER] Token generated successfully for channel: ${channelName}, UID: ${uid}`);
+        return res.json({ token, uid });
+    } catch (error) {
+        console.error("[SERVER] Failed to generate Agora Token:", error);
+        return res.status(500).json({ error: 'Internal Server Error during token generation' });
+    }
 });
 
 // Send Private Message
