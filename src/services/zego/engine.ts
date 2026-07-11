@@ -21,6 +21,12 @@ export class ZegoEngineManager {
             const appId = Number(import.meta.env.VITE_ZEGO_APP_ID);
             const appSign = import.meta.env.VITE_ZEGO_APP_SIGN;
 
+            console.log(
+                "ZEGO CONFIG",
+                import.meta.env.VITE_ZEGO_APP_ID,
+                import.meta.env.VITE_ZEGO_APP_SIGN
+            );
+
             if (!appId || !appSign) {
                 console.warn('VITE_ZEGO_APP_ID and VITE_ZEGO_APP_SIGN are not set.');
                 this.state = 'Disconnected';
