@@ -528,48 +528,29 @@ app.post("/api/users", async (req, res) => {
   res.json(user || localUser);
 });
 
-// Rooms REST API
-app.get("/api/rooms", async (req, res) => {
-  const fDb = getFirestoreDb();
-  if (fDb) {
-    try {
-      const snap = await fDb.collection("voice_rooms").get();
-      const roomsList: any[] = [];
-      for (const doc of snap.docs) {
-        const d = doc.data();
-        
-        // Fetch seats subcollection
-        const seatsSnap = await doc.ref.collection("mic_seats").get();
-        const seats = seatsSnap.docs.map(sDoc => {
-          const sData = sDoc.data();
-          return {
-            index: sData.seat_number,
-            userId: sData.current_user_id || null,
-            isMuted: sData.is_muted || false,
-            isLocked: sData.is_locked || false
-          };
-        }).sort((a, b) => a.index - b.index);
+// مصفوفة ديناميكية مشتركة في السيرفر لجميع المستخدمين
+let activeRooms = [
+    { id: "room_1", name: "مجلس صدى العرب الرئيسي" }
+];
 
-        roomsList.push({
-          id: doc.id,
-          name: d.room_name || d.name,
-          hostName: d.host_name || d.hostName || "مالك المجلس",
-          hostAvatar: d.host_avatar || d.hostAvatar || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120",
-          isPrivate: d.is_private || d.isPrivate || false,
-          password: d.room_password || d.password || "",
-          level: d.level || 1,
-          xp: d.xp || 0,
-          activeUsersCount: d.activeUsersCount || seats.filter(s => s.userId).length || 1,
-          seats: seats,
-          owner_id: d.owner_id || null
-        });
-      }
-      return res.json(roomsList);
-    } catch (e) {
-      console.warn("Firestore fetch rooms error, fallback to local:", e);
-    }
-  }
-  res.json(getDb().rooms);
+// مسار استقبال وإنشاء الغرف الجديدة من أي مستخدم
+app.post('/api/rooms', (req, res) => {
+    const { roomName } = req.body;
+    if (!roomName) return res.status(400).json({ error: 'Room name is required' });
+
+    const newRoom = {
+        id: `room_${Date.now()}`, // توليد معرف فريد يعتمد على الوقت
+        name: roomName
+    };
+
+    activeRooms.push(newRoom); // حفظ الغرفة في السيرفر العام ليراها الجميع
+    console.log(`[SERVER] New room created globally: ${roomName}`);
+    return res.json({ success: true, rooms: activeRooms });
+});
+
+// مسار جلب الغرف
+app.get('/api/rooms', (req, res) => {
+    return res.json(activeRooms);
 });
 
 app.get("/api/rooms/:id", async (req, res) => {

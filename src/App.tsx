@@ -414,8 +414,26 @@ export default function App() {
 
   // Run on mount and keep polling (fallback/sync)
   useEffect(() => {
+    const fetchRooms = async () => {
+        try {
+            const res = await fetch('/api/rooms');
+            const data = await res.json();
+            const sanitizedRooms = (data || []).map((r: any) => ({
+              ...r,
+              seats: padSeats(r.seats)
+            }));
+            setRooms(sanitizedRooms);
+        } catch (e) {
+            console.error("Error fetching synchronized rooms:", e);
+        }
+    };
+
+    fetchRooms();
     fetchDbStates();
-    const interval = setInterval(fetchDbStates, 5000);
+    const interval = setInterval(() => {
+        fetchRooms();
+        fetchDbStates();
+    }, 5000); // تحديث تلقائي كل 5 ثوانٍ
     return () => clearInterval(interval);
   }, [currentUser?.id, activeRoom?.id]);
 
