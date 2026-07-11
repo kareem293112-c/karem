@@ -72,6 +72,22 @@ import {
   signOut
 } from 'firebase/auth';
 
+// Safe shadowed fetch to support dynamic VITE_API_URL redirection for API requests on static deployments
+const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  let target = input;
+  if (typeof target === 'string' && target.startsWith('/api/')) {
+    const isAiStudioOrLocal = window.location.hostname.includes('run.app') || 
+                              window.location.hostname.includes('localhost') || 
+                              window.location.hostname.includes('127.0.0.1') ||
+                              window.location.hostname.includes('googleusercontent.com') ||
+                              window.location.hostname.includes('google.com') ||
+                              window.location.hostname.includes('sandbox.google.com');
+    const apiBaseUrl = isAiStudioOrLocal ? '' : (import.meta.env.VITE_API_URL || '');
+    target = `${apiBaseUrl}${target}`;
+  }
+  return window.fetch(target, init);
+};
+
 // Interactive React subcomponent to dynamically decrypt and display messages safely
 const EncryptedMessageText = ({ 
   ciphertext, 
@@ -721,7 +737,22 @@ export default function App() {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
+    let wsUrl = `${protocol}//${window.location.host}`;
+    const isAiStudioOrLocal = window.location.hostname.includes('run.app') || 
+                              window.location.hostname.includes('localhost') || 
+                              window.location.hostname.includes('127.0.0.1') ||
+                              window.location.hostname.includes('googleusercontent.com') ||
+                              window.location.hostname.includes('google.com') ||
+                              window.location.hostname.includes('sandbox.google.com');
+    if (!isAiStudioOrLocal && import.meta.env.VITE_API_URL) {
+      try {
+        const backendUrl = new URL(import.meta.env.VITE_API_URL);
+        const wsProtocol = backendUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProtocol}//${backendUrl.host}`;
+      } catch (e) {
+        console.error("Invalid VITE_API_URL for WebSocket:", e);
+      }
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

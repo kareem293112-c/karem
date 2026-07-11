@@ -1,4 +1,5 @@
 import AgoraRTC, { IAgoraRTCClient, IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng';
+import { fetch } from '../../lib/utils';
 
 export class AgoraEngineManager {
     private static instance: AgoraEngineManager | null = null;
@@ -66,11 +67,14 @@ export class AgoraEngineManager {
             if (!client) throw new Error("Agora client not initialized");
 
             const appId = import.meta.env.VITE_AGORA_APP_ID || "c7dfa22636da4b40980825480e3c090c";
-            const certificate = import.meta.env.VITE_AGORA_APP_CERTIFICATE || "037e1422e2f644dfb7d57a7bc04bd25f";
-            console.log(`[AGORA] Attempting to join room with App ID: ${appId} and Cert: ${certificate.substring(0, 5)}...`);
             
-            // للتطوير التجريبي السريع نقوم بتمرير التوكن كـ null لتفادي أخطاء الـ Token تماماً
-            await client.join(appId, roomID, null, userID);
+            // Get token from server
+            const response = await fetch(`/api/agora-token?channelName=${roomID}&account=${userID}`);
+            const { token } = await response.json();
+            
+            console.log(`[AGORA] Attempting to join room with App ID: ${appId} and token: ${token.substring(0, 5)}...`);
+            
+            await client.join(appId, roomID, token, userID);
             console.log(`[AGORA] Successfully joined room: ${roomID} as User: ${userID}`);
         } catch (err) {
             console.error("[AGORA] Join room failed:", err);

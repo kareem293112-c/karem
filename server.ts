@@ -1,6 +1,8 @@
 import express from "express";
 import path from "path";
 import http from "http";
+import 'dotenv/config';
+import { RtcTokenBuilder, RtcRole } from 'agora-access-token';
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import { getDb, saveDb, initDb, DatabaseSchema } from "./server/db";
@@ -1701,6 +1703,39 @@ app.get("/api/messages/:userId", (req, res) => {
     m => m.senderId === userId || m.receiverId === userId
   );
   res.json(userMsgs);
+});
+
+// Agora Token Generation
+app.get("/api/agora-token", (req, res) => {
+  const channelName = req.query.channelName as string;
+  const account = req.query.account as string;
+  
+  if (!channelName || !account) {
+    return res.status(400).json({ error: "Missing channelName or account" });
+  }
+
+  const appId = process.env.VITE_AGORA_APP_ID;
+  const appCertificate = process.env.VITE_AGORA_APP_CERTIFICATE;
+
+  if (!appId || !appCertificate) {
+    return res.status(500).json({ error: "Agora config missing on server" });
+  }
+
+  const role = RtcRole.PUBLISHER;
+  const expirationTimeInSeconds = 3600;
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+  const token = RtcTokenBuilder.buildTokenWithUserAccount(
+    appId,
+    appCertificate,
+    channelName,
+    account,
+    role,
+    privilegeExpiredTs
+  );
+
+  res.json({ token });
 });
 
 // Send Private Message
